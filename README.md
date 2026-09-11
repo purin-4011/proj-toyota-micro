@@ -59,8 +59,9 @@
 1. กดปุ่ม **Build** (ค้อน) — ถ้าไม่มี error จะเห็น `Build Finished` ที่ Console
 2. เสียบบอร์ด Nucleo-F411RE ผ่าน USB
 3. กดปุ่ม **Run/Debug** เพื่ออัพโหลดโปรแกรมลงบอร์ด
-4. ทดสอบ: กดปุ่มที่ต่อกับขา **PB4** สั้นๆ แล้วปล่อย -> ไฟเขียว (PA5) ติดชั่วครู่
-   กดค้างเกิน 0.5 วิ แล้วปล่อย -> ไฟแดง (PA6) ติดชั่วครู่
+4. ทดสอบ: กดปุ่มสั้น (SHORT) 4 ครั้งติดกัน (รหัส default คือ
+   SHORT-SHORT-SHORT-SHORT) แล้วหยุด 1.5 วิ -> LED เขียว (PA5) ติดค้าง 10 วิ
+   ถ้ากดรหัสผิด -> LED แดง (PA6) กระพริบสั้นๆ แล้วกลับ IDLE ให้ลองใหม่
 
 ---
 
@@ -72,8 +73,11 @@
 | `Inc/drivers/exti_driver.h` + `Src/drivers/exti_driver.c` | จับ press/release ปุ่ม PB4 ผ่าน EXTI4 |
 | `Inc/drivers/timer_driver.h` + `Src/drivers/timer_driver.c` | TIM2 free-running (ms tick) + TIM3 periodic 100ms |
 | `Inc/app/code_decoder.h` + `Src/app/code_decoder.c` | pure logic แปลง duration -> SHORT/LONG |
+| `Inc/app/code_storage.h` + `Src/app/code_storage.c` | เก็บรหัส default ใน RAM + เทียบรหัส |
+| `Inc/app/lock_fsm.h` + `Src/app/lock_fsm.c` | state machine หลัก (IDLE/ENTERING/UNLOCKED/LOCKED_OUT) |
 | `Inc/app/app_config.h` | pin mapping + threshold รวมจุดเดียว |
-| `Src/main.c` | ต่อทุกอย่างเข้าด้วยกัน เป็น bring-up test |
+| `Src/main.c` | ต่อทุกอย่างเข้าด้วยกัน เป็นตัวล็อกที่ใช้งานได้จริง |
+| `Src/syscalls_stub.c` | stub แก้ linker error จากโปรเจคแบบ Empty (ดูหัวข้อด้านล่าง) |
 
 **ทำไมไม่มีไฟล์ `.c` ของ `app_config.h`?** เพราะเป็นแค่ค่าคงที่ (`#define`)
 ไม่มี logic ให้ implement จึงมีแค่ header อย่างเดียว
@@ -87,13 +91,27 @@
 - ปุ่มสมมติว่าต่อแบบ **active-low พร้อม internal pull-up** (กด = 0V, ปล่อย = 3.3V)
   ถ้าวงจรจริงของ Training Shield ต่างจากนี้ ต้องแก้ logic ใน `EXTI4_IRQHandler`
 - Threshold SHORT/LONG ตั้งไว้ 500ms เป็นค่าเริ่มต้น ควรปรับจากการทดสอบจริง
+- **Timer มี shadow register:** ถ้าแก้ `timer_driver.c` เพิ่มเติมในอนาคต
+  ต้องจำไว้เสมอว่าเขียน PSC/ARR แล้วต้องสั่ง `EGR.UG = 1` บังคับ update
+  event ก่อนเริ่มนับ (`CEN = 1`) ไม่งั้นค่า prescaler จะยังไม่มีผลจริง
+  (บั๊กนี้เจอจริงระหว่างทดสอบ — ทำให้กดสั้นก็ถูกอ่านเป็น LONG เสมอ)
+- **ถ้า build แล้วเจอ `undefined reference to _close/_lseek/_read/_write`:**
+  ให้เพิ่มไฟล์ `Src/syscalls_stub.c` เข้าไปในโปรเจค (โปรเจคแบบ Empty ไม่ gen
+  syscalls.c ให้อัตโนมัติ)
 
 ## ยังไม่ได้ทำ (ตาม Timeline สัปดาห์ 2-4)
 
-- [ ] `lock_fsm` — state machine เต็มรูปแบบ (IDLE -> ENTERING -> VALIDATING -> LOCKOUT)
-- [ ] `code_storage` — เก็บรหัสที่ตั้งไว้ + ต่อ CRC hardware unit
-- [ ] ADC driver (DMA) — อ่าน potentiometer ตั้งความยาวรหัส
-- [ ] UART driver (DMA) — ส่ง audit log ออก USART2
-- [ ] 7-segment driver — แสดงผลสถานะ/countdown
-- [ ] ต่อ TIM3 tick handler เข้ากับ input-timeout (1.5s) และ lockout (30s) จริง
-- [ ] ตัดสินใจเรื่อง persistence (RAM vs Flash) และ edge case เปลี่ยนความยาวรหัส
+- [ ] **โหมดตั้งรหัสใหม่ (Setup mode)** — รอ ADC (potentiometer) เลือกความยาว
+      รหัสก่อนตามที่ proposal ระบุ และต้องคิดเรื่องปุ่ม "ยืนยัน" แยกจากการ
+      ป้อนรหัสให้ชัดเจนก่อน
+- [ ] `CodeStorage_Commit()` — ฟังก์ชันตั้งรหัสใหม่ (ยังไม่มี เพราะยังไม่มี
+      โหมดตั้งรหัสให้เรียกใช้)
+- [ ] ADC driver (DMA/Interrupt) — อ่าน potentiometer
+- [ ] UART driver (DMA/Interrupt) — ส่ง audit log ออก USART2
+- [ ] 7-segment driver — แสดงผลสถานะ/countdown/จำนวนครั้งที่ผิด
+- [ ] CRC (Additional Peripheral) — ตรวจสอบความถูกต้องของรหัสที่เก็บไว้
+- [ ] Audit log ผ่าน UART (บันทึกเวลาที่พยายามปลดล็อกและผลลัพธ์)
+
+**ยืนยันแล้ว (ไม่ต้องคิดต่อ):**
+- เปลี่ยนความยาวรหัสตอนมีรหัสเดิมอยู่แล้ว = **reset รหัสทั้งหมด**
+- รหัสเก็บใน **RAM เท่านั้น** — ไฟดับ = รหัสหาย ไม่ persist ลง Flash

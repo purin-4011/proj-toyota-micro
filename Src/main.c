@@ -1,32 +1,42 @@
 /******************************************************************************
  * @file    main.c
- * @brief   Digital Combination Lock - Bring-up test (Week 1-2 scope)
- *          เขียนแบบ Register-level (bare-metal) ล้วนๆ ตามที่สอนในคอร์ส
- *          ไม่ใช้ HAL/LL และไม่พึ่งพา CMSIS struct ใดๆ
+ * @brief   Digital Combination Lock - Core unlock flow (IDLE -> ENTERING ->
+ *          UNLOCKED / LOCKED_OUT) เขียนแบบ Register-level (bare-metal)
  *
- *          ผลที่ควรเห็นเมื่อทดสอบจริงบนบอร์ด:
- *            - กดปุ่มสั้น (< 500ms) แล้วปล่อย -> LED เขียว (PA5) ติดชั่วครู่
- *            - กดปุ่มยาว (>= 500ms) แล้วปล่อย -> LED แดง (PA6) ติดชั่วครู่
- *            - LED ดับเองภายใน ~300ms หลังติด (ควบคุมผ่าน TIM3 tick,
- *              ไม่มี delay/blocking ในโค้ดเลยสักบรรทัด)
+ *          รหัส default (ตาม proposal): SHORT-SHORT-SHORT-SHORT
+ *          ทดสอบ: กดปุ่มสั้น 4 ครั้งติดกัน (แต่ละครั้งเว้นไม่เกิน 1.5s)
+ *          แล้วหยุด 1.5 วิ -> ควรเห็น LED เขียวติดค้าง ~10 วิ
  *
- *          ยังไม่มี: state machine, code storage, CRC, ADC, UART, 7-segment
- *          (ตาม Timeline สัปดาห์ 3-4 ในแผนที่วางไว้)
+ *          พฤติกรรมที่ควรเห็น:
+ *            - ทุกครั้งที่กดปุ่ม (ไม่ว่า SHORT/LONG) -> LED เขียวกระพริบสั้นๆ
+ *              ตอบรับ (KEY_ACCEPTED)
+ *            - หยุดกด 1.5 วิ แล้วรหัสถูก -> LED เขียวติดค้าง 10 วิ
+ *            - หยุดกด 1.5 วิ แล้วรหัสผิด (ยังไม่ครบ 3 ครั้ง) -> LED แดง
+ *              กระพริบสั้นๆ แล้วกลับ IDLE ให้ป้อนใหม่
+ *            - ผิดครบ 3 ครั้งติดกัน -> LED แดงติดค้าง 30 วิ (lockout)
+ *              ระหว่างนี้กดปุ่มอะไรก็ไม่มีผล
+ *
+ *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอ ADC), ADC, UART,
+ *          7-segment, CRC (ตาม Timeline ที่เหลือ)
  ******************************************************************************/
 #include "gpio_driver.h"
 #include "exti_driver.h"
 #include "timer_driver.h"
 #include "code_decoder.h"
+#include "lock_fsm.h"
 #include "app_config.h"
 
-/* ตัวแปรที่ถูกแตะทั้งจาก ISR (EXTI4, TIM3) และ main loop ต้องเป็น volatile */
-static uint32_t volatile s_press_start_tick = 0U;
-static uint16_t volatile s_led_hold_ticks_remaining = 0U;
+/* จำนวน tick (100ms/tick) ที่ต้องการให้ LED กระพริบสั้นๆ ตอบรับการกด/ผิด */
+#define MAIN_BLINK_HOLD_TICKS   (3U)   /* 3 x 100ms = 300ms */
 
-#define MAIN_LED_HOLD_TICKS   (3U)   /* 3 tick x 100ms = 300ms */
+/* ตัวแปรที่ถูกแตะทั้งจาก ISR และ main loop ต้องเป็น volatile ตาม MISRA-C */
+static uint32_t volatile s_press_start_tick = 0U;
+static uint16_t volatile s_green_blink_ticks_remaining = 0U;
+static uint16_t volatile s_red_blink_ticks_remaining = 0U;
 
 static void Main_ExtiEventHandler(EXTI_Edge_t edge);
 static void Main_Tim3TickHandler(void);
+static void Main_LockNotifyHandler(LockFsm_Notification_t notification);
 static void Main_HardwareInit(void);
 
 int main(void)
@@ -37,7 +47,7 @@ int main(void)
      * (EXTI4 สำหรับปุ่ม, TIM3 สำหรับ periodic tick) ตามเกณฑ์ "ห้าม Polling" */
     for (;;)
     {
-        /* Week 3-4: จุดนี้จะเรียก lock_fsm state machine เมื่อพัฒนาเสร็จ */
+        /* รอ ADC เสร็จก่อนค่อยเพิ่มโหมดตั้งรหัสใหม่ (Setup mode) */
     }
 }
 
@@ -58,11 +68,15 @@ static void Main_HardwareInit(void)
 
     /* --- Button input (EXTI4 บน PB4) --- */
     EXTI_Driver_Init(Main_ExtiEventHandler);
+
+    /* --- State machine หลักของระบบล็อก --- */
+    LockFsm_Init(Main_LockNotifyHandler);
 }
 
 /**
  * @brief  เรียกจาก EXTI4 ISR เมื่อปุ่มถูกกดหรือปล่อย
- *         คำนวณ duration จาก TIM2 tick แล้ว classify ผ่าน code_decoder
+ *         คำนวณ duration จาก TIM2 tick แล้วส่งต่อให้ lock_fsm ตัดสินใจ
+ *         (main.c ไม่ตัดสินใจ logic เองแล้ว แค่เป็นสะพานเชื่อม)
  */
 static void Main_ExtiEventHandler(EXTI_Edge_t const edge)
 {
@@ -76,45 +90,98 @@ static void Main_ExtiEventHandler(EXTI_Edge_t const edge)
         uint32_t const duration_ms  = release_tick - s_press_start_tick;
         CodeSymbol_t const symbol   = CodeDecoder_Classify(duration_ms);
 
-        if (symbol == CODE_SYMBOL_SHORT)
-        {
-            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
-            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
-        }
-        else
-        {
-            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
-            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
-        }
-
-        /* ให้ TIM3 tick มาดับ LED ให้เองภายหลัง (ไม่ blocking ใน ISR) */
-        s_led_hold_ticks_remaining = (uint16_t) MAIN_LED_HOLD_TICKS;
+        LockFsm_OnSymbol(symbol, duration_ms);
     }
 }
 
 /**
- * @brief  เรียกจาก TIM3 ISR ทุก 100ms — ตอนนี้นับถอยหลังดับ LED เท่านั้น
- *         (Week 3-4: ขยายเป็น mode-switching handler สำหรับ input-timeout
- *          1.5s และ lockout countdown 30s ตามที่ออกแบบไว้)
+ * @brief  เรียกจาก TIM3 ISR ทุก 100ms — ทำ 2 หน้าที่:
+ *         1) นับถอยหลัง LED กระพริบสั้นๆ (blink feedback) แล้วดับเมื่อครบ
+ *         2) ขับเคลื่อน timeout ต่างๆ ภายใน lock_fsm (input timeout,
+ *            unlock display hold, lockout countdown)
  */
 static void Main_Tim3TickHandler(void)
 {
-    if (s_led_hold_ticks_remaining > 0U)
+    if (s_green_blink_ticks_remaining > 0U)
     {
-        s_led_hold_ticks_remaining--;
+        s_green_blink_ticks_remaining--;
 
-        if (s_led_hold_ticks_remaining == 0U)
+        if ((s_green_blink_ticks_remaining == 0U) && (LockFsm_GetState() != LOCK_STATE_UNLOCKED))
         {
+            /* ดับไฟกระพริบ เว้นแต่กำลังอยู่ในสถานะ UNLOCKED ที่ต้องการให้
+             * ไฟเขียวค้างไว้ต่อ (lock_fsm เป็นคนสั่งดับเองผ่าน
+             * LOCK_NOTIFY_RETURN_TO_IDLE ตอนครบ 10 วิ) */
             GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
-            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
         }
         else
         {
-            /* ยังนับถอยหลังไม่ครบ - ไม่ทำอะไรเพิ่ม */
+            /* ยังนับไม่ครบ หรือกำลังอยู่ในสถานะที่ต้องการให้ไฟค้าง */
         }
     }
     else
     {
-        /* ไม่มี LED ค้างอยู่ - ไม่ทำอะไร */
+        /* ไม่มีไฟกระพริบค้างอยู่ - ไม่ทำอะไร */
+    }
+
+    if (s_red_blink_ticks_remaining > 0U)
+    {
+        s_red_blink_ticks_remaining--;
+
+        if ((s_red_blink_ticks_remaining == 0U) && (LockFsm_GetState() != LOCK_STATE_LOCKED_OUT))
+        {
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+        }
+        else
+        {
+            /* ยังนับไม่ครบ หรือกำลังอยู่ในสถานะ LOCKED_OUT ที่ต้องการให้ไฟค้าง */
+        }
+    }
+    else
+    {
+        /* ไม่มีไฟกระพริบค้างอยู่ - ไม่ทำอะไร */
+    }
+
+    LockFsm_OnTick();
+}
+
+/**
+ * @brief  เรียกจาก lock_fsm เมื่อมีเหตุการณ์เกิดขึ้น (ผ่าน callback ที่
+ *         ลงทะเบียนไว้ตอน LockFsm_Init) - main.c เป็นคนตัดสินใจว่าจะ
+ *         แสดงผลยังไง (ตอนนี้คือ LED เท่านั้น อนาคตจะเพิ่ม 7-segment)
+ */
+static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
+{
+    switch (notification)
+    {
+        case LOCK_NOTIFY_KEY_ACCEPTED:
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
+            s_green_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+            break;
+
+        case LOCK_NOTIFY_UNLOCK_SUCCESS:
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            /* ไม่ตั้ง blink counter - ไฟติดค้างจนกว่า lock_fsm จะสั่ง
+             * RETURN_TO_IDLE เองตอนครบ 10 วิ (ดูฟังก์ชัน Main_Tim3TickHandler) */
+            break;
+
+        case LOCK_NOTIFY_UNLOCK_FAIL:
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
+            s_red_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+            break;
+
+        case LOCK_NOTIFY_LOCKOUT_ENTER:
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            break;
+
+        case LOCK_NOTIFY_RETURN_TO_IDLE:
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            break;
+
+        default:
+            /* MISRA: switch ต้องมี default case เสมอ แม้ enum จะครบทุกค่าแล้ว */
+            break;
     }
 }

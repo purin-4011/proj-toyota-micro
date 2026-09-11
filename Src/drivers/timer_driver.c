@@ -18,6 +18,7 @@
 #define TIM_OFFSET_CR1          (0x00UL)
 #define TIM_OFFSET_DIER         (0x0CUL)
 #define TIM_OFFSET_SR           (0x10UL)
+#define TIM_OFFSET_EGR          (0x14UL)
 #define TIM_OFFSET_CNT          (0x24UL)
 #define TIM_OFFSET_PSC          (0x28UL)
 #define TIM_OFFSET_ARR          (0x2CUL)
@@ -25,6 +26,7 @@
 #define TIM_CR1_CEN_BIT         (0U)
 #define TIM_DIER_UIE_BIT        (0U)
 #define TIM_SR_UIF_BIT          (0U)
+#define TIM_EGR_UG_BIT          (0U)
 
 /* --- RCC (Section 6.3.10, APB1ENR) --- */
 #define RCC_BASE                (0x40023800UL)
@@ -51,7 +53,19 @@ void Timer_Driver_TIM2_Init(void)
      *    free-running แทบไม่ overflow (ที่ 1ms/tick ~= 49.7 วันถึง wrap) */
     REG32(TIM2_BASE + TIM_OFFSET_ARR) = 0xFFFFFFFFUL;
 
-    /* 4) reset counter แล้วเริ่มนับ (ไม่เปิด interrupt — เป็นแค่นาฬิกากลาง) */
+    /* 4) BUG FIX ที่สำคัญมาก: ค่า PSC/ARR ที่เพิ่งเขียนไปจะยังไม่มีผลจริง
+     *    จนกว่าจะเกิด "update event" ครั้งแรก (ปกติคือตอน overflow ครบรอบ)
+     *    เพราะ ARR ตั้งไว้สูงสุดแทบไม่มีวัน overflow เอง เราจึงต้อง "บังคับ"
+     *    ให้เกิด update event ทันทีด้วยการเซ็ต EGR.UG กัน ไม่งั้น TIM2 จะนับ
+     *    ด้วยความเร็วดิบ 16MHz แทนที่จะเป็น 1kHz ตามที่ตั้งใจ (bug ที่ทำให้
+     *    กดสั้นก็ถูกอ่านเป็น LONG เสมอ เพราะตัวเลข duration พุ่งเกิน threshold) */
+    REG32(TIM2_BASE + TIM_OFFSET_EGR) |= (1UL << TIM_EGR_UG_BIT);
+
+    /* 5) EGR.UG จะไปเซ็ต flag UIF ใน SR ด้วยเป็นผลข้างเคียง ต้อง clear ทิ้ง
+     *    ก่อน (TIM2 ไม่ได้เปิด interrupt แต่เคลียร์ไว้เพื่อความสะอาดของ state) */
+    REG32(TIM2_BASE + TIM_OFFSET_SR) &= ~(1UL << TIM_SR_UIF_BIT);
+
+    /* 6) reset counter แล้วเริ่มนับ (ไม่เปิด interrupt — เป็นแค่นาฬิกากลาง) */
     REG32(TIM2_BASE + TIM_OFFSET_CNT) = 0UL;
     REG32(TIM2_BASE + TIM_OFFSET_CR1) |= (1UL << TIM_CR1_CEN_BIT);
 }
@@ -75,17 +89,24 @@ void Timer_Driver_TIM3_Init(Timer_TickCallback_t const callback)
 
         /* 3) ตั้ง ARR ให้ overflow ทุก 100ms ตาม design */
         REG32(TIM3_BASE + TIM_OFFSET_ARR) = TIMER_DRIVER_TIM3_ARR;
+
+        /* 4) BUG FIX เดียวกับ TIM2: ต้องบังคับ update event ก่อน ไม่งั้น
+         *    PSC ที่เพิ่งตั้งจะยังไม่มีผล ทำให้ TIM3 overflow ทุก ~6
+         *    ไมโครวินาที (นับดิบ 16MHz) แทนที่จะเป็นทุก 100ms ตามที่ตั้งใจ
+         *    ผลคือ interrupt รัวถี่ผิดปกติจนระบบค้าง/ทำงานผิดเพี้ยน */
+        REG32(TIM3_BASE + TIM_OFFSET_EGR) |= (1UL << TIM_EGR_UG_BIT);
+        REG32(TIM3_BASE + TIM_OFFSET_SR) &= ~(1UL << TIM_SR_UIF_BIT);
         REG32(TIM3_BASE + TIM_OFFSET_CNT) = 0UL;
 
-        /* 4) เปิด Update Interrupt Enable */
+        /* 5) เปิด Update Interrupt Enable */
         REG32(TIM3_BASE + TIM_OFFSET_DIER) |= (1UL << TIM_DIER_UIE_BIT);
 
-        /* 5) ตั้ง priority = 2 (ต่ำกว่า EXTI4 ตามที่ตกลงไว้ในสถาปัตยกรรม)
+        /* 6) ตั้ง priority = 2 (ต่ำกว่า EXTI4 ตามที่ตกลงไว้ในสถาปัตยกรรม)
          *    แล้วเปิด NVIC ให้ TIM3_IRQn ผ่าน CMSIS function ตามที่สไลด์สอน */
         NVIC_SetPriority(TIM3_IRQn, 2U);
         NVIC_EnableIRQ(TIM3_IRQn);
 
-        /* 6) เริ่มนับ */
+        /* 7) เริ่มนับ */
         REG32(TIM3_BASE + TIM_OFFSET_CR1) |= (1UL << TIM_CR1_CEN_BIT);
     }
     else

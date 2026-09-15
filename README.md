@@ -65,6 +65,11 @@
    ติดค้าง 10 วิ ถ้ากดรหัสผิด -> LED แดง (PA6) กระพริบสั้นๆ, 7-segment
    กลับเป็น 0 แล้วกลับ IDLE ให้ลองใหม่
    ถ้าผิดครบ 3 ครั้ง -> LED แดงติดค้าง 9 วิ + 7-segment นับถอยหลัง 9→0
+5. ทดสอบ Admin Mode: เปิด Serial Terminal (PuTTY/Tera Term/Serial Monitor)
+   ต่อกับ COM port ของ ST-Link (baud 9600, 8N1) พิมพ์ `UNLOCK` แล้ว Enter
+   -> ควรเห็นข้อความ `OK: Unlocked` ตอบกลับ และ LED/7-segment เปลี่ยนตาม
+   ทันทีไม่ว่าระบบจะอยู่สถานะไหนอยู่ก่อนหน้า (ลองคำสั่ง `LOCKOUT` และ
+   `RESET` ด้วยเช่นกัน — พิมพ์ตัวพิมพ์ใหญ่เท่านั้น)
 
 ---
 
@@ -80,6 +85,8 @@
 | `Inc/app/lock_fsm.h` + `Src/app/lock_fsm.c` | state machine หลัก (IDLE/ENTERING/UNLOCKED/LOCKED_OUT) |
 | `Inc/app/app_config.h` | pin mapping + threshold รวมจุดเดียว (⚠️ BCD pin ยังเป็น placeholder) |
 | `Inc/drivers/seven_segment_driver.h` + `Src/drivers/seven_segment_driver.c` | ส่งเลข 0-9 ผ่าน BCD 4 ขา ให้ driver IC บน shield แปลงเป็นลายไฟเอง |
+| `Inc/drivers/uart_driver.h` + `Src/drivers/uart_driver.c` | USART2 (PA2/PA3) interrupt-driven ทั้ง RX (รับคำสั่ง) และ TX (ส่งข้อความตอบกลับ) |
+| `Inc/app/admin_command.h` + `Src/app/admin_command.c` | pure logic ตีความบรรทัดคำสั่ง UNLOCK/LOCKOUT/RESET |
 | `Src/main.c` | ต่อทุกอย่างเข้าด้วยกัน เป็นตัวล็อกที่ใช้งานได้จริง |
 | `Src/syscalls_stub.c` | stub แก้ linker error จากโปรเจคแบบ Empty (ดูหัวข้อด้านล่าง) |
 
@@ -114,6 +121,11 @@
 - ✅ **7-segment แสดงจำนวนหลักที่ป้อนระหว่าง ENTERING แล้ว** (1, 2, 3, ...)
   ผ่าน `LockFsm_GetEntryCount()` — อัพเดตทุกครั้งที่กดปุ่ม และล้างกลับเป็น 0
   เมื่อจบรอบ (ไม่ว่าถูก, ผิด, หรือกลับสู่ IDLE)
+- ✅ **Admin Mode ผ่าน UART (USART2, 9600 baud, 8N1) พร้อมใช้งานแล้ว**
+  รองรับคำสั่ง `UNLOCK`, `LOCKOUT`, `RESET` (พิมพ์ตัวพิมพ์ใหญ่ + Enter)
+  ทำงานได้ทุกเวลาไม่ว่า user จะกำลังทำอะไรอยู่ เพราะรับ-ส่งผ่าน interrupt
+  ล้วนๆ (RXNE สำหรับรับ, TXE สำหรับส่ง) — ไม่มี polling เลยสักจุด
+  ต่อผ่าน ST-Link Virtual COM Port ได้เลย ไม่ต้องเดินสายเพิ่ม (PA2=TX, PA3=RX)
 
 ## ยังไม่ได้ทำ (ตาม Timeline สัปดาห์ 2-4)
 
@@ -122,12 +134,13 @@
       ป้อนรหัสให้ชัดเจนก่อน
 - [ ] `CodeStorage_Commit()` — ฟังก์ชันตั้งรหัสใหม่ (ยังไม่มี เพราะยังไม่มี
       โหมดตั้งรหัสให้เรียกใช้)
-- [ ] ADC driver (DMA/Interrupt) — อ่าน potentiometer
-- [ ] UART driver (DMA/Interrupt) — ส่ง audit log ออก USART2
+- [ ] ADC driver (DMA/Interrupt) — อ่าน potentiometer (ยังไม่ทำตามที่ตกลงกัน)
 - [ ] CRC (Additional Peripheral) — ตรวจสอบความถูกต้องของรหัสที่เก็บไว้
-- [ ] Audit log ผ่าน UART (บันทึกเวลาที่พยายามปลดล็อกและผลลัพธ์)
+- [ ] Audit log ผ่าน UART (บันทึกเวลาที่พยายามปลดล็อกและผลลัพธ์ ส่งออกทาง
+      USART2 อัตโนมัติ — ตอนนี้ UART มีแค่ฝั่งรับคำสั่ง admin เท่านั้น)
 - [ ] แสดงผล "Un"/"Er" หรือจำนวนครั้งที่ผิดบน 7-segment ตอนสถานะอื่น
-      (ตอนนี้ 7-segment อัพเดตเฉพาะตอน LOCKED_OUT เท่านั้น)
+      (ตอนนี้ 7-segment อัพเดตเฉพาะตอน LOCKED_OUT/ENTERING เท่านั้น)
+- [ ] ล็อก 2 ชั้นด้วย potentiometer (ค้างไว้ก่อนตามที่ตกลงกัน รอ ADC)
 
 **ยืนยันแล้ว (ไม่ต้องคิดต่อ):**
 - เปลี่ยนความยาวรหัสตอนมีรหัสเดิมอยู่แล้ว = **reset รหัสทั้งหมด**

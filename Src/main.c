@@ -17,29 +17,40 @@
  *            - ผิดครบ 3 ครั้งติดกัน -> LED แดงติดค้าง 9 วิ (lockout) พร้อม
  *              7-segment นับถอยหลัง 9,8,7,...,0 ระหว่างนี้กดปุ่มอะไรก็ไม่มีผล
  *
- *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอ ADC), ADC, UART,
+ *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอ ADC), ADC,
  *          CRC (ตาม Timeline ที่เหลือ)
  ******************************************************************************/
 #include "gpio_driver.h"
 #include "exti_driver.h"
 #include "timer_driver.h"
 #include "seven_segment_driver.h"
+#include "uart_driver.h"
 #include "code_decoder.h"
 #include "lock_fsm.h"
+#include "admin_command.h"
 #include "app_config.h"
 
 /* จำนวน tick (100ms/tick) ที่ต้องการให้ LED กระพริบสั้นๆ ตอบรับการกด/ผิด */
 #define MAIN_BLINK_HOLD_TICKS   (3U)   /* 3 x 100ms = 300ms */
+
+/* ความยาวสูงสุดของบรรทัดคำสั่ง admin (คำสั่งที่ยาวที่สุดคือ "LOCKOUT" = 7
+ * ตัวอักษร เผื่อไว้ให้พอสำหรับ error/edge case) */
+#define MAIN_ADMIN_LINE_MAX_LEN  (16U)
 
 /* ตัวแปรที่ถูกแตะทั้งจาก ISR และ main loop ต้องเป็น volatile ตาม MISRA-C */
 static uint32_t volatile s_press_start_tick = 0U;
 static uint16_t volatile s_green_blink_ticks_remaining = 0U;
 static uint16_t volatile s_red_blink_ticks_remaining = 0U;
 
+/* buffer สะสมบรรทัดคำสั่ง admin ที่รับมาทีละ byte จาก UART RX interrupt */
+static char s_admin_line_buffer[MAIN_ADMIN_LINE_MAX_LEN];
+static uint8_t s_admin_line_index = 0U;
+
 
 static void Main_ExtiEventHandler(EXTI_Edge_t edge);
 static void Main_Tim3TickHandler(void);
 static void Main_LockNotifyHandler(LockFsm_Notification_t notification);
+static void Main_UartRxHandler(uint8_t received_byte);
 static void Main_HardwareInit(void);
 
 int main(void)
@@ -78,6 +89,10 @@ static void Main_HardwareInit(void)
 
     /* --- 7-segment (BCD) สำหรับแสดง lockout countdown --- */
     SevenSegment_Driver_Init();
+
+    /* --- UART (USART2) สำหรับ Admin Mode: รับคำสั่งจาก PC ผ่าน ST-Link VCP --- */
+    UART_Driver_Init(Main_UartRxHandler);
+    UART_Driver_SendString("Digital Combination Lock - Admin console ready\r\n");
 
     /* --- State machine หลักของระบบล็อก --- */
     LockFsm_Init(Main_LockNotifyHandler);
@@ -214,5 +229,64 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
         default:
             /* MISRA: switch ต้องมี default case เสมอ แม้ enum จะครบทุกค่าแล้ว */
             break;
+    }
+}
+
+/**
+ * @brief  เรียกจาก USART2 ISR (ผ่าน callback ที่ลงทะเบียนไว้ตอน
+ *         UART_Driver_Init) ทุกครั้งที่รับ byte ใหม่ 1 ตัว — สะสมเป็น
+ *         บรรทัดคำสั่งจนกว่าจะเจอ '\r' หรือ '\n' แล้วตีความผ่าน
+ *         admin_command ทันทีภายใน ISR context (การทำงานสั้นและไม่
+ *         blocking ทั้งหมด ปลอดภัยที่จะทำใน ISR)
+ */
+static void Main_UartRxHandler(uint8_t const received_byte)
+{
+    if ((received_byte == (uint8_t) '\r') || (received_byte == (uint8_t) '\n'))
+    {
+        if (s_admin_line_index > 0U)
+        {
+            AdminCommand_t cmd;
+
+            s_admin_line_buffer[s_admin_line_index] = '\0';
+            cmd = AdminCommand_Parse(s_admin_line_buffer);
+
+            switch (cmd)
+            {
+                case ADMIN_CMD_UNLOCK:
+                    LockFsm_ForceUnlock();
+                    UART_Driver_SendString("OK: Unlocked\r\n");
+                    break;
+
+                case ADMIN_CMD_LOCKOUT:
+                    LockFsm_ForceLockout();
+                    UART_Driver_SendString("OK: Lockout engaged\r\n");
+                    break;
+
+                case ADMIN_CMD_RESET:
+                    LockFsm_ResetToDefault();
+                    UART_Driver_SendString("OK: Code reset to default\r\n");
+                    break;
+
+                default:
+                    /* ADMIN_CMD_UNKNOWN - พิมพ์ผิดหรือคำสั่งไม่รองรับ */
+                    UART_Driver_SendString("ERROR: Unknown command\r\n");
+                    break;
+            }
+
+            s_admin_line_index = 0U;
+        }
+        else
+        {
+            /* บรรทัดว่างเปล่า (กด Enter ติดกันหรือ \r\n มาคนละ byte) - ไม่ทำอะไร */
+        }
+    }
+    else if (s_admin_line_index < (MAIN_ADMIN_LINE_MAX_LEN - 1U))
+    {
+        s_admin_line_buffer[s_admin_line_index] = (char) received_byte;
+        s_admin_line_index++;
+    }
+    else
+    {
+        /* บรรทัดยาวเกินไป - ทิ้งตัวอักษรส่วนเกิน (ป้องกัน buffer overflow) */
     }
 }

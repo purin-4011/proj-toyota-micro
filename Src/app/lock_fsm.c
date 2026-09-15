@@ -213,3 +213,35 @@ uint8_t LockFsm_GetEntryCount(void)
 {
     return s_entry_count;
 }
+
+void LockFsm_ForceUnlock(void)
+{
+    s_state = LOCK_STATE_UNLOCKED;
+    s_entry_count = 0U;
+    s_idle_tick_counter = 0U;
+    s_hold_tick_counter = 0U;
+    s_wrong_attempt_count = 0U;
+    LockFsm_Notify(LOCK_NOTIFY_UNLOCK_SUCCESS);
+}
+
+void LockFsm_ForceLockout(void)
+{
+    s_state = LOCK_STATE_LOCKED_OUT;
+    s_entry_count = 0U;
+    s_idle_tick_counter = 0U;
+    s_hold_tick_counter = 0U;
+    /* ไม่แตะ s_wrong_attempt_count เพราะนี่ไม่ใช่การกดรหัสผิดจริง
+     * เป็นคำสั่งบังคับจาก admin */
+    LockFsm_Notify(LOCK_NOTIFY_LOCKOUT_ENTER);
+}
+
+void LockFsm_ResetToDefault(void)
+{
+    CodeStorage_Init();
+    s_state = LOCK_STATE_IDLE;
+    s_entry_count = 0U;
+    s_idle_tick_counter = 0U;
+    s_hold_tick_counter = 0U;
+    s_wrong_attempt_count = 0U;
+    LockFsm_Notify(LOCK_NOTIFY_RETURN_TO_IDLE);
+}

@@ -40,6 +40,7 @@
 #include "seven_segment_driver.h"
 #include "uart_driver.h"
 #include "adc_driver.h"
+#include "crc_driver.h"
 #include "code_decoder.h"
 #include "lock_fsm.h"
 #include "admin_command.h"
@@ -114,6 +115,11 @@ static void Main_HardwareInit(void)
 
     /* --- ADC (potentiometer, PA4) สำหรับล็อกชั้นที่ 2 (dial lock) --- */
     ADC_Driver_Init(Main_AdcEocHandler);
+
+    /* --- CRC (ตรวจสอบความถูกต้องของรหัสที่เก็บไว้ ป้องกัน RAM corruption)
+     *     ต้องเปิดก่อน LockFsm_Init() เพราะข้างในจะเรียก CodeStorage_Init()
+     *     ซึ่งต้องใช้ CRC hardware คำนวณค่าอ้างอิงทันที --- */
+    CRC_Driver_Init();
 
     /* --- State machine หลักของระบบล็อก --- */
     LockFsm_Init(Main_LockNotifyHandler);

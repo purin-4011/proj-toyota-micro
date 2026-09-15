@@ -16,10 +16,13 @@
 #define APP_BUTTON_PIN         (4U)   /* PB4  - EXTI4 */
 
 #define APP_LED_GREEN_PORT     GPIOA_BASE
-#define APP_LED_GREEN_PIN      (7U)   /* PA7 (D11) - ลองใหม่เพราะ PA5 จริงๆ
+#define APP_LED_GREEN_PIN      (5U)   /* PA7 (D11) - ลองใหม่เพราะ PA5 จริงๆ
                                        * เป็นสีฟ้า ไม่ใช่เขียว (เจอจากทดสอบจริง)
                                        * ถ้า PA7 ไม่ใช่เขียวอีก ให้ลองสลับเป็น
                                        * GPIOB_BASE / pin 6 (PB6, D10) แทน */
+
+#define APP_LED_G_PORT     GPIOB_BASE
+#define APP_LED_G_PIN      (6U)
 
 #define APP_LED_RED_PORT       GPIOA_BASE
 #define APP_LED_RED_PIN        (6U)   /* PA6  - ผิด/ล็อกอยู่ */
@@ -37,8 +40,8 @@
  * เพื่อให้ lock_fsm นับ tick ได้ตรงๆ โดยไม่ต้องคูณ/หารซ้ำทุกครั้งที่เรียก
  * ---------------------------------------------------------------------- */
 #define APP_INPUT_TIMEOUT_TICKS     (15U)   /* 1500ms / 100ms ต่อ tick */
-#define APP_LOCKOUT_TICKS           (90U)   /* 9s / 100ms ต่อ tick */
-#define APP_UNLOCK_HOLD_TICKS       (100U)  /* 10s ตามที่ proposal ระบุให้
+#define APP_LOCKOUT_TICKS           (100U)   /* 9s / 100ms ต่อ tick */
+#define APP_UNLOCK_HOLD_TICKS       (50U)  /* 10s ตามที่ proposal ระบุให้
                                               * แสดงผลปลดล็อกสำเร็จค้างไว้ */
 #define APP_TICKS_PER_SECOND        (10U)   /* 1000ms / 100ms ต่อ tick */
 

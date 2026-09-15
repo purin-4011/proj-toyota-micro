@@ -36,6 +36,7 @@ static uint32_t volatile s_press_start_tick = 0U;
 static uint16_t volatile s_green_blink_ticks_remaining = 0U;
 static uint16_t volatile s_red_blink_ticks_remaining = 0U;
 
+
 static void Main_ExtiEventHandler(EXTI_Edge_t edge);
 static void Main_Tim3TickHandler(void);
 static void Main_LockNotifyHandler(LockFsm_Notification_t notification);
@@ -63,6 +64,10 @@ static void Main_HardwareInit(void)
     GPIO_Driver_EnableClock(APP_LED_RED_PORT);
     GPIO_Driver_Init(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_MODE_OUTPUT, GPIO_PULL_NONE);
     GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+
+    GPIO_Driver_EnableClock(APP_LED_G_PORT);
+    GPIO_Driver_Init(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_MODE_OUTPUT, GPIO_PULL_NONE);
+    GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
 
     /* --- Timing subsystem (Two-Tier Architecture) --- */
     Timer_Driver_TIM2_Init();
@@ -178,7 +183,7 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
             break;
 
         case LOCK_NOTIFY_UNLOCK_SUCCESS:
-            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
+            GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_SET);
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
             /* ไม่ตั้ง blink counter - ไฟติดค้างจนกว่า lock_fsm จะสั่ง
              * RETURN_TO_IDLE เองตอนครบ 10 วิ (ดูฟังก์ชัน Main_Tim3TickHandler) */
@@ -199,7 +204,7 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
             break;
 
         case LOCK_NOTIFY_RETURN_TO_IDLE:
-            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
             /* กลับสู่สถานะปกติแล้ว (ไม่ว่าจะจบจาก UNLOCKED หรือ LOCKED_OUT)
              * -> ล้างจอ 7-segment กลับเป็น 0 เตรียมรอบถัดไป */

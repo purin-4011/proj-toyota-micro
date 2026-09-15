@@ -60,8 +60,11 @@
 2. เสียบบอร์ด Nucleo-F411RE ผ่าน USB
 3. กดปุ่ม **Run/Debug** เพื่ออัพโหลดโปรแกรมลงบอร์ด
 4. ทดสอบ: กดปุ่มสั้น (SHORT) 4 ครั้งติดกัน (รหัส default คือ
-   SHORT-SHORT-SHORT-SHORT) แล้วหยุด 1.5 วิ -> LED เขียว (PA5) ติดค้าง 10 วิ
-   ถ้ากดรหัสผิด -> LED แดง (PA6) กระพริบสั้นๆ แล้วกลับ IDLE ให้ลองใหม่
+   SHORT-SHORT-SHORT-SHORT) — ระหว่างกดแต่ละครั้ง 7-segment ควรขึ้นเลข
+   1, 2, 3, 4 ตามจำนวนหลักที่กดไปแล้ว แล้วหยุด 1.5 วิ -> LED เขียว (PA7)
+   ติดค้าง 10 วิ ถ้ากดรหัสผิด -> LED แดง (PA6) กระพริบสั้นๆ, 7-segment
+   กลับเป็น 0 แล้วกลับ IDLE ให้ลองใหม่
+   ถ้าผิดครบ 3 ครั้ง -> LED แดงติดค้าง 9 วิ + 7-segment นับถอยหลัง 9→0
 
 ---
 
@@ -75,7 +78,8 @@
 | `Inc/app/code_decoder.h` + `Src/app/code_decoder.c` | pure logic แปลง duration -> SHORT/LONG |
 | `Inc/app/code_storage.h` + `Src/app/code_storage.c` | เก็บรหัส default ใน RAM + เทียบรหัส |
 | `Inc/app/lock_fsm.h` + `Src/app/lock_fsm.c` | state machine หลัก (IDLE/ENTERING/UNLOCKED/LOCKED_OUT) |
-| `Inc/app/app_config.h` | pin mapping + threshold รวมจุดเดียว |
+| `Inc/app/app_config.h` | pin mapping + threshold รวมจุดเดียว (⚠️ BCD pin ยังเป็น placeholder) |
+| `Inc/drivers/seven_segment_driver.h` + `Src/drivers/seven_segment_driver.c` | ส่งเลข 0-9 ผ่าน BCD 4 ขา ให้ driver IC บน shield แปลงเป็นลายไฟเอง |
 | `Src/main.c` | ต่อทุกอย่างเข้าด้วยกัน เป็นตัวล็อกที่ใช้งานได้จริง |
 | `Src/syscalls_stub.c` | stub แก้ linker error จากโปรเจคแบบ Empty (ดูหัวข้อด้านล่าง) |
 
@@ -98,6 +102,18 @@
 - **ถ้า build แล้วเจอ `undefined reference to _close/_lseek/_read/_write`:**
   ให้เพิ่มไฟล์ `Src/syscalls_stub.c` เข้าไปในโปรเจค (โปรเจคแบบ Empty ไม่ gen
   syscalls.c ให้อัตโนมัติ)
+- ✅ **Pin ของ 7-segment BCD ยืนยันแล้วจาก `Guide_Exam_1.pdf`** (ตาราง pin
+  mapping อย่างเป็นทางการ): 2⁰=PC7, 2¹=PA8, 2²=PB10, 2³=PA9 — อัพเดตใน
+  `app_config.h` เรียบร้อยแล้ว ไม่ใช่ placeholder อีกต่อไป
+  (หมายเหตุจากสไลด์: ถ้าใช้ shield สีน้ำเงิน silkscreen บนบอร์ดจะผิด ให้ยึด
+  ตาราง pin นี้แทนเสมอ)
+- ⚠️ **LED เขียวเปลี่ยนจาก PA5 เป็น PA7 แล้ว** เพราะทดสอบจริงพบว่า PA5 คือ
+  สีฟ้า ไม่ใช่เขียว — ถ้า PA7 ก็ยังไม่ใช่สีเขียวอีก ให้ลองสลับเป็น PB6 (D10)
+  แทน (แก้ที่ `APP_LED_GREEN_PORT`/`APP_LED_GREEN_PIN` ใน `app_config.h`
+  จุดเดียวพอ ไม่ต้องไปตามแก้ที่อื่น เพราะทุกจุดใน `main.c` อ้างอิง macro นี้)
+- ✅ **7-segment แสดงจำนวนหลักที่ป้อนระหว่าง ENTERING แล้ว** (1, 2, 3, ...)
+  ผ่าน `LockFsm_GetEntryCount()` — อัพเดตทุกครั้งที่กดปุ่ม และล้างกลับเป็น 0
+  เมื่อจบรอบ (ไม่ว่าถูก, ผิด, หรือกลับสู่ IDLE)
 
 ## ยังไม่ได้ทำ (ตาม Timeline สัปดาห์ 2-4)
 
@@ -108,9 +124,10 @@
       โหมดตั้งรหัสให้เรียกใช้)
 - [ ] ADC driver (DMA/Interrupt) — อ่าน potentiometer
 - [ ] UART driver (DMA/Interrupt) — ส่ง audit log ออก USART2
-- [ ] 7-segment driver — แสดงผลสถานะ/countdown/จำนวนครั้งที่ผิด
 - [ ] CRC (Additional Peripheral) — ตรวจสอบความถูกต้องของรหัสที่เก็บไว้
 - [ ] Audit log ผ่าน UART (บันทึกเวลาที่พยายามปลดล็อกและผลลัพธ์)
+- [ ] แสดงผล "Un"/"Er" หรือจำนวนครั้งที่ผิดบน 7-segment ตอนสถานะอื่น
+      (ตอนนี้ 7-segment อัพเดตเฉพาะตอน LOCKED_OUT เท่านั้น)
 
 **ยืนยันแล้ว (ไม่ต้องคิดต่อ):**
 - เปลี่ยนความยาวรหัสตอนมีรหัสเดิมอยู่แล้ว = **reset รหัสทั้งหมด**

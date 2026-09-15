@@ -69,4 +69,17 @@ LockState_t LockFsm_GetState(void);
 /** อ่านจำนวนครั้งที่กดผิดติดต่อกัน ณ ปัจจุบัน (0-3) */
 uint8_t LockFsm_GetWrongAttemptCount(void);
 
+/**
+ * @brief  อ่านจำนวนวินาทีที่เหลือของ lockout countdown (สำหรับแสดงบน
+ *         7-segment) คืนค่า 0 เสมอถ้าไม่ได้อยู่ในสถานะ LOCKED_OUT
+ */
+uint16_t LockFsm_GetLockoutSecondsRemaining(void);
+
+/**
+ * @brief  อ่านจำนวนสัญลักษณ์ (SHORT/LONG) ที่ป้อนเข้ามาแล้วในรอบปัจจุบัน
+ *         (สำหรับแสดงบน 7-segment ว่ากดไปกี่หลักแล้ว) คืนค่า 0 ถ้ายังไม่ได้
+ *         เริ่มป้อนหรือเพิ่งจบรอบไปแล้ว
+ */
+uint8_t LockFsm_GetEntryCount(void);
+
 #endif /* LOCK_FSM_H */

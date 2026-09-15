@@ -191,3 +191,25 @@ uint8_t LockFsm_GetWrongAttemptCount(void)
 {
     return s_wrong_attempt_count;
 }
+
+uint16_t LockFsm_GetLockoutSecondsRemaining(void)
+{
+    uint16_t seconds_remaining;
+
+    if (s_state == LOCK_STATE_LOCKED_OUT)
+    {
+        uint16_t const ticks_remaining = (uint16_t) APP_LOCKOUT_TICKS - s_hold_tick_counter;
+        seconds_remaining = ticks_remaining / (uint16_t) APP_TICKS_PER_SECOND;
+    }
+    else
+    {
+        seconds_remaining = 0U;
+    }
+
+    return seconds_remaining;
+}
+
+uint8_t LockFsm_GetEntryCount(void)
+{
+    return s_entry_count;
+}

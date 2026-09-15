@@ -16,7 +16,10 @@
 #define APP_BUTTON_PIN         (4U)   /* PB4  - EXTI4 */
 
 #define APP_LED_GREEN_PORT     GPIOA_BASE
-#define APP_LED_GREEN_PIN      (5U)   /* PA5  - ปลดล็อกสำเร็จ */
+#define APP_LED_GREEN_PIN      (7U)   /* PA7 (D11) - ลองใหม่เพราะ PA5 จริงๆ
+                                       * เป็นสีฟ้า ไม่ใช่เขียว (เจอจากทดสอบจริง)
+                                       * ถ้า PA7 ไม่ใช่เขียวอีก ให้ลองสลับเป็น
+                                       * GPIOB_BASE / pin 6 (PB6, D10) แทน */
 
 #define APP_LED_RED_PORT       GPIOA_BASE
 #define APP_LED_RED_PIN        (6U)   /* PA6  - ผิด/ล็อกอยู่ */
@@ -26,7 +29,7 @@
  * ---------------------------------------------------------------------- */
 #define APP_PRESS_THRESHOLD_MS      (500U)
 #define APP_INPUT_TIMEOUT_MS        (1500U)
-#define APP_LOCKOUT_DURATION_SEC    (30U)
+#define APP_LOCKOUT_DURATION_SEC    (9U)
 #define APP_MAX_WRONG_ATTEMPTS      (3U)
 
 /* ---------------------------------------------------------------------- *
@@ -34,13 +37,25 @@
  * เพื่อให้ lock_fsm นับ tick ได้ตรงๆ โดยไม่ต้องคูณ/หารซ้ำทุกครั้งที่เรียก
  * ---------------------------------------------------------------------- */
 #define APP_INPUT_TIMEOUT_TICKS     (15U)   /* 1500ms / 100ms ต่อ tick */
-#define APP_LOCKOUT_TICKS           (300U)  /* 30s / 100ms ต่อ tick */
+#define APP_LOCKOUT_TICKS           (90U)   /* 9s / 100ms ต่อ tick */
 #define APP_UNLOCK_HOLD_TICKS       (100U)  /* 10s ตามที่ proposal ระบุให้
                                               * แสดงผลปลดล็อกสำเร็จค้างไว้ */
+#define APP_TICKS_PER_SECOND        (10U)   /* 1000ms / 100ms ต่อ tick */
 
-/* TODO (รอ ADC เสร็จ): APP_SETUP_ENTRY_THRESHOLD_MS สำหรับตรวจจับการกดค้าง
- * >=3 วินาทีตอน IDLE เพื่อเข้าโหมดตั้งรหัสใหม่ - ยังไม่ implement ใน lock_fsm
- * เพราะต้องรอ potentiometer (ADC) มากำหนดความยาวรหัสก่อนตามที่ proposal
- * ระบุไว้ และต้องคิดเรื่องปุ่มยืนยันแยกจากการป้อนรหัสให้ชัดก่อน */
+/* ---------------------------------------------------------------------- *
+ * 7-Segment BCD input pins — ยืนยันแล้วจาก Guide_Exam_1.pdf (ตาราง pin
+ * mapping อย่างเป็นทางการ พร้อมรูป Training Shield 1 Rev 03.00 จริง)
+ *
+ * หมายเหตุจากสไลด์: ถ้าใช้ shield สีน้ำเงิน (blue shield) ป้าย silkscreen
+ * บนบอร์ดจะ "ผิด" ให้ยึดตาม pin mapping นี้ (ของ shield สีแดง) แทนเสมอ
+ * ---------------------------------------------------------------------- */
+#define APP_SEG_BCD_A_PORT   GPIOC_BASE   /* 2^0 (LSB) -> PC7 */
+#define APP_SEG_BCD_A_PIN    (7U)
+#define APP_SEG_BCD_B_PORT   GPIOA_BASE   /* 2^1       -> PA8 */
+#define APP_SEG_BCD_B_PIN    (8U)
+#define APP_SEG_BCD_C_PORT   GPIOB_BASE   /* 2^2       -> PB10 */
+#define APP_SEG_BCD_C_PIN    (10U)
+#define APP_SEG_BCD_D_PORT   GPIOA_BASE   /* 2^3 (MSB) -> PA9 */
+#define APP_SEG_BCD_D_PIN    (9U)
 
 #endif /* APP_CONFIG_H */

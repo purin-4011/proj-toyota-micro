@@ -9,19 +9,21 @@
  *
  *          พฤติกรรมที่ควรเห็น:
  *            - ทุกครั้งที่กดปุ่ม (ไม่ว่า SHORT/LONG) -> LED เขียวกระพริบสั้นๆ
- *              ตอบรับ (KEY_ACCEPTED)
+ *              ตอบรับ (KEY_ACCEPTED) พร้อม 7-segment แสดงจำนวนหลักที่กด
+ *              ไปแล้ว (1, 2, 3, ...)
  *            - หยุดกด 1.5 วิ แล้วรหัสถูก -> LED เขียวติดค้าง 10 วิ
  *            - หยุดกด 1.5 วิ แล้วรหัสผิด (ยังไม่ครบ 3 ครั้ง) -> LED แดง
  *              กระพริบสั้นๆ แล้วกลับ IDLE ให้ป้อนใหม่
- *            - ผิดครบ 3 ครั้งติดกัน -> LED แดงติดค้าง 30 วิ (lockout)
- *              ระหว่างนี้กดปุ่มอะไรก็ไม่มีผล
+ *            - ผิดครบ 3 ครั้งติดกัน -> LED แดงติดค้าง 9 วิ (lockout) พร้อม
+ *              7-segment นับถอยหลัง 9,8,7,...,0 ระหว่างนี้กดปุ่มอะไรก็ไม่มีผล
  *
  *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอ ADC), ADC, UART,
- *          7-segment, CRC (ตาม Timeline ที่เหลือ)
+ *          CRC (ตาม Timeline ที่เหลือ)
  ******************************************************************************/
 #include "gpio_driver.h"
 #include "exti_driver.h"
 #include "timer_driver.h"
+#include "seven_segment_driver.h"
 #include "code_decoder.h"
 #include "lock_fsm.h"
 #include "app_config.h"
@@ -68,6 +70,9 @@ static void Main_HardwareInit(void)
 
     /* --- Button input (EXTI4 บน PB4) --- */
     EXTI_Driver_Init(Main_ExtiEventHandler);
+
+    /* --- 7-segment (BCD) สำหรับแสดง lockout countdown --- */
+    SevenSegment_Driver_Init();
 
     /* --- State machine หลักของระบบล็อก --- */
     LockFsm_Init(Main_LockNotifyHandler);
@@ -142,6 +147,18 @@ static void Main_Tim3TickHandler(void)
     }
 
     LockFsm_OnTick();
+
+    /* อัพเดตจอ 7-segment แสดง lockout countdown ทุก tick ที่อยู่ในสถานะนี้
+     * (ยังไม่ทำ "blank" ตอนไม่ใช่ lockout เพราะ BCD driver IC ไม่มีขา
+     * Blanking Input ต่อไว้ - ดู TODO ใน seven_segment_driver.h) */
+    if (LockFsm_GetState() == LOCK_STATE_LOCKED_OUT)
+    {
+        SevenSegment_Driver_ShowDigit((uint8_t) LockFsm_GetLockoutSecondsRemaining());
+    }
+    else
+    {
+        /* ไม่อยู่ในสถานะ lockout - ไม่ต้องอัพเดตจอ */
+    }
 }
 
 /**
@@ -156,6 +173,8 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
         case LOCK_NOTIFY_KEY_ACCEPTED:
             GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
             s_green_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+            /* แสดงจำนวนหลักที่ป้อนไปแล้วบน 7-segment (1, 2, 3, ...) */
+            SevenSegment_Driver_ShowDigit(LockFsm_GetEntryCount());
             break;
 
         case LOCK_NOTIFY_UNLOCK_SUCCESS:
@@ -168,16 +187,23 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
         case LOCK_NOTIFY_UNLOCK_FAIL:
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
             s_red_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+            /* ป้อนรหัสรอบนี้จบแล้ว (ไม่ว่าจะถูกหรือผิด) -> ล้างตัวเลขนับหลัก
+             * กลับเป็น 0 เตรียมรอรอบถัดไป */
+            SevenSegment_Driver_ShowDigit(0U);
             break;
 
         case LOCK_NOTIFY_LOCKOUT_ENTER:
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
             GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            SevenSegment_Driver_ShowDigit((uint8_t) APP_LOCKOUT_DURATION_SEC);
             break;
 
         case LOCK_NOTIFY_RETURN_TO_IDLE:
             GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            /* กลับสู่สถานะปกติแล้ว (ไม่ว่าจะจบจาก UNLOCKED หรือ LOCKED_OUT)
+             * -> ล้างจอ 7-segment กลับเป็น 0 เตรียมรอบถัดไป */
+            SevenSegment_Driver_ShowDigit(0U);
             break;
 
         default:

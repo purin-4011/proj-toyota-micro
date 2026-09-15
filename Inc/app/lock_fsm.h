@@ -33,7 +33,8 @@ typedef enum
     LOCK_NOTIFY_UNLOCK_SUCCESS,     /* รหัสถูกต้อง */
     LOCK_NOTIFY_UNLOCK_FAIL,        /* รหัสผิด (แต่ยังไม่ครบ 3 ครั้ง) */
     LOCK_NOTIFY_LOCKOUT_ENTER,      /* ผิดครบ 3 ครั้ง เข้าสู่ lockout */
-    LOCK_NOTIFY_RETURN_TO_IDLE      /* จบช่วงแสดงผล (UNLOCKED หรือ LOCKOUT) กลับสู่ปกติ */
+    LOCK_NOTIFY_RETURN_TO_IDLE,     /* จบช่วงแสดงผล (UNLOCKED หรือ LOCKOUT) กลับสู่ปกติ */
+    LOCK_NOTIFY_DIAL_VIOLATION      /* potentiometer หลุดโซนระหว่างป้อนรหัส - ยกเลิกรอบนี้ */
 } LockFsm_Notification_t;
 
 typedef void (*LockFsm_NotifyCallback_t)(LockFsm_Notification_t notification);
@@ -99,5 +100,13 @@ void LockFsm_ForceLockout(void);
 
 /** สั่งรีเซ็ตรหัสกลับเป็นค่า default และกลับสู่สถานะ IDLE ทันที */
 void LockFsm_ResetToDefault(void);
+
+/**
+ * @brief  เรียกเมื่อ potentiometer หลุดออกจากโซนเป้าหมายระหว่างกำลังป้อน
+ *         รหัสอยู่ (สถานะ ENTERING) — ยกเลิกรอบป้อนรหัสปัจจุบันทันที กลับสู่
+ *         IDLE โดยไม่นับเป็นการกดรหัสผิด (ไม่กระทบ wrong_attempt_count)
+ *         ถ้าเรียกตอนไม่ได้อยู่ในสถานะ ENTERING จะไม่มีผลอะไร
+ */
+void LockFsm_OnDialViolation(void);
 
 #endif /* LOCK_FSM_H */

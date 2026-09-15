@@ -17,17 +17,33 @@
  *            - ผิดครบ 3 ครั้งติดกัน -> LED แดงติดค้าง 9 วิ (lockout) พร้อม
  *              7-segment นับถอยหลัง 9,8,7,...,0 ระหว่างนี้กดปุ่มอะไรก็ไม่มีผล
  *
- *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอ ADC), ADC,
- *          CRC (ตาม Timeline ที่เหลือ)
+ *          ล็อกชั้นที่ 2 (potentiometer dial lock):
+ *            - ตอน IDLE, 7-segment โชว์โซนปัจจุบันของ potentiometer (1-9)
+ *              ให้ผู้ใช้หมุนหาตำแหน่งได้ โซนเป้าหมาย default = 5
+ *            - ถ้า poten อยู่ถูกโซนอยู่แล้วตอนเริ่มกดปุ่มแรก -> เปิด ADC
+ *              Analog Watchdog เฝ้าดูไม่ให้หลุดระหว่างกด ถ้าหลุดกลางคัน
+ *              (มือไปโดน) -> ยกเลิกทันที ไฟแดงกะพริบเตือน กลับ IDLE
+ *              (ไม่นับเป็นรหัสผิด เพราะถือเป็นอุบัติเหตุ)
+ *            - ถ้า poten อยู่ผิดโซนตั้งแต่ก่อนกดปุ่มแรก -> ไม่เปิด watchdog
+ *              เลย ปล่อยให้กดรหัสจนจบตามปกติ แล้วไปนับเป็น "กรอกผิด 1
+ *              ครั้ง" ตอน validate เหมือนกดรหัสปุ่มผิด (ไม่ใช่การตัดจบ
+ *              ทันที เพราะไม่ใช่การหลุดระหว่างกด แต่ผิดตั้งแต่ต้น)
+ *            - ปลดล็อกสำเร็จได้ก็ต่อเมื่อผ่านทั้ง 2 เงื่อนไข (dial ถูกโซน
+ *              + รหัสปุ่มถูก) พร้อมกันตอน validate
+ *
+ *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอออกแบบ UI เพิ่ม), CRC
+ *          (ตาม Timeline ที่เหลือ)
  ******************************************************************************/
 #include "gpio_driver.h"
 #include "exti_driver.h"
 #include "timer_driver.h"
 #include "seven_segment_driver.h"
 #include "uart_driver.h"
+#include "adc_driver.h"
 #include "code_decoder.h"
 #include "lock_fsm.h"
 #include "admin_command.h"
+#include "dial_lock.h"
 #include "app_config.h"
 
 /* จำนวน tick (100ms/tick) ที่ต้องการให้ LED กระพริบสั้นๆ ตอบรับการกด/ผิด */
@@ -51,6 +67,8 @@ static void Main_ExtiEventHandler(EXTI_Edge_t edge);
 static void Main_Tim3TickHandler(void);
 static void Main_LockNotifyHandler(LockFsm_Notification_t notification);
 static void Main_UartRxHandler(uint8_t received_byte);
+static void Main_AdcEocHandler(uint16_t raw_value);
+static void Main_AdcWatchdogHandler(void);
 static void Main_HardwareInit(void);
 
 int main(void)
@@ -61,7 +79,7 @@ int main(void)
      * (EXTI4 สำหรับปุ่ม, TIM3 สำหรับ periodic tick) ตามเกณฑ์ "ห้าม Polling" */
     for (;;)
     {
-        /* รอ ADC เสร็จก่อนค่อยเพิ่มโหมดตั้งรหัสใหม่ (Setup mode) */
+        /* รอออกแบบ UI เพิ่มก่อนค่อยทำโหมดตั้งรหัสใหม่ (Setup mode) */
     }
 }
 
@@ -93,6 +111,9 @@ static void Main_HardwareInit(void)
     /* --- UART (USART2) สำหรับ Admin Mode: รับคำสั่งจาก PC ผ่าน ST-Link VCP --- */
     UART_Driver_Init(Main_UartRxHandler);
     UART_Driver_SendString("Digital Combination Lock - Admin console ready\r\n");
+
+    /* --- ADC (potentiometer, PA4) สำหรับล็อกชั้นที่ 2 (dial lock) --- */
+    ADC_Driver_Init(Main_AdcEocHandler);
 
     /* --- State machine หลักของระบบล็อก --- */
     LockFsm_Init(Main_LockNotifyHandler);
@@ -195,11 +216,43 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
             s_green_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
             /* แสดงจำนวนหลักที่ป้อนไปแล้วบน 7-segment (1, 2, 3, ...) */
             SevenSegment_Driver_ShowDigit(LockFsm_GetEntryCount());
+
+            /* ถ้านี่คือสัญลักษณ์แรกของรอบป้อนรหัสใหม่ (entry count เพิ่ง
+             * กลายเป็น 1) และ potentiometer อยู่ถูกโซนเป้าหมายอยู่แล้ว
+             * ตอนนี้พอดี -> เปิด Analog Watchdog เฝ้าดูไม่ให้หลุดโซน
+             * ระหว่างกด (ป้องกันอุบัติเหตุมือไปโดน)
+             *
+             * ถ้า poten อยู่ผิดโซนอยู่แล้วตั้งแต่ก่อนกดปุ่มแรก -> "ไม่เปิด"
+             * watchdog เลย เพราะไม่ใช่การ "หลุด" ระหว่างกด แต่ผิดตั้งแต่ต้น
+             * ปล่อยให้ป้อนรหัสจนจบตามปกติ แล้วไปนับเป็น "กรอกผิด 1 ครั้ง"
+             * ตอน validate เหมือนกดรหัสปุ่มผิดปกติ (ตามที่ต้องการ) */
+            if (LockFsm_GetEntryCount() == 1U)
+            {
+                if (DialLock_IsAtTargetZone())
+                {
+                    uint16_t dial_low;
+                    uint16_t dial_high;
+
+                    DialLock_GetTargetZoneBounds(&dial_low, &dial_high);
+                    ADC_Driver_EnableWatchdog(dial_low, dial_high, Main_AdcWatchdogHandler);
+                }
+                else
+                {
+                    /* poten ผิดโซนตั้งแต่ก่อนกดปุ่มแรก - ไม่เปิด watchdog
+                     * รอบนี้ จะไปเจอผลตอน validate แทน */
+                }
+            }
+            else
+            {
+                /* ไม่ใช่ตัวแรก - ถ้า watchdog เปิดอยู่แล้วก็เปิดต่อ ถ้าไม่ได้
+                 * เปิดไว้ (เพราะผิดโซนตั้งแต่ต้น) ก็ยังคงไม่เปิด */
+            }
             break;
 
         case LOCK_NOTIFY_UNLOCK_SUCCESS:
             GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_SET);
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            ADC_Driver_DisableWatchdog();
             /* ไม่ตั้ง blink counter - ไฟติดค้างจนกว่า lock_fsm จะสั่ง
              * RETURN_TO_IDLE เองตอนครบ 10 วิ (ดูฟังก์ชัน Main_Tim3TickHandler) */
             break;
@@ -207,6 +260,7 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
         case LOCK_NOTIFY_UNLOCK_FAIL:
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
             s_red_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+            ADC_Driver_DisableWatchdog();
             /* ป้อนรหัสรอบนี้จบแล้ว (ไม่ว่าจะถูกหรือผิด) -> ล้างตัวเลขนับหลัก
              * กลับเป็น 0 เตรียมรอรอบถัดไป */
             SevenSegment_Driver_ShowDigit(0U);
@@ -215,14 +269,28 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
         case LOCK_NOTIFY_LOCKOUT_ENTER:
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
             GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            ADC_Driver_DisableWatchdog();
             SevenSegment_Driver_ShowDigit((uint8_t) APP_LOCKOUT_DURATION_SEC);
             break;
 
         case LOCK_NOTIFY_RETURN_TO_IDLE:
             GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
             GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            ADC_Driver_DisableWatchdog();
             /* กลับสู่สถานะปกติแล้ว (ไม่ว่าจะจบจาก UNLOCKED หรือ LOCKED_OUT)
-             * -> ล้างจอ 7-segment กลับเป็น 0 เตรียมรอบถัดไป */
+             * -> ล้างจอ 7-segment กลับเป็น 0 เตรียมรอบถัดไป (จอจะกลับไป
+             * แสดงโซน potentiometer เองอัตโนมัติผ่าน Main_AdcEocHandler
+             * ตั้งแต่ sample ถัดไปเพราะตอนนี้ state กลับเป็น IDLE แล้ว) */
+            SevenSegment_Driver_ShowDigit(0U);
+            break;
+
+        case LOCK_NOTIFY_DIAL_VIOLATION:
+            /* potentiometer หลุดโซนเป้าหมายระหว่างกำลังป้อนรหัส - ยกเลิก
+             * รอบนี้ทันที เตือนด้วย LED แดงกะพริบสั้นๆ (ไม่ติดค้างเหมือน
+             * lockout เพราะไม่ใช่ความผิดที่นับโทษ) */
+            ADC_Driver_DisableWatchdog();
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
+            s_red_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
             SevenSegment_Driver_ShowDigit(0U);
             break;
 
@@ -289,4 +357,35 @@ static void Main_UartRxHandler(uint8_t const received_byte)
     {
         /* บรรทัดยาวเกินไป - ทิ้งตัวอักษรส่วนเกิน (ป้องกัน buffer overflow) */
     }
+}
+
+/**
+ * @brief  เรียกจาก ADC ISR ทุกครั้งที่แปลงค่า potentiometer เสร็จ 1 ครั้ง
+ *         (continuous mode ทำงานต่อเนื่องตลอดเวลา) — อัพเดตค่าให้ dial_lock
+ *         แล้วถ้าตอนนี้ยังไม่ได้เริ่มป้อนรหัส (สถานะ IDLE) ให้โชว์โซน
+ *         ปัจจุบันบน 7-segment เพื่อช่วยให้ผู้ใช้หมุนหาตำแหน่งได้
+ */
+static void Main_AdcEocHandler(uint16_t const raw_value)
+{
+    DialLock_UpdateRaw(raw_value);
+
+    if (LockFsm_GetState() == LOCK_STATE_IDLE)
+    {
+        SevenSegment_Driver_ShowDigit(DialLock_GetCurrentZone());
+    }
+    else
+    {
+        /* กำลังป้อนรหัสหรืออยู่สถานะอื่น - จอ 7-segment ถูกใช้แสดงอย่างอื่น
+         * อยู่แล้ว (จำนวนหลักที่กด/lockout countdown) ไม่ไปแตะ */
+    }
+}
+
+/**
+ * @brief  เรียกจาก ADC ISR เมื่อ Analog Watchdog ตรวจพบว่า potentiometer
+ *         หลุดออกจากโซนเป้าหมาย (เปิดใช้งานเฉพาะตอนสถานะ ENTERING เท่านั้น
+ *         ผ่าน Main_LockNotifyHandler) ส่งต่อให้ lock_fsm ยกเลิกรอบนี้ทันที
+ */
+static void Main_AdcWatchdogHandler(void)
+{
+    LockFsm_OnDialViolation();
 }

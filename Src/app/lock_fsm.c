@@ -4,6 +4,7 @@
  ******************************************************************************/
 #include "lock_fsm.h"
 #include "code_storage.h"
+#include "dial_lock.h"
 #include "app_config.h"
 
 static LockState_t s_state = LOCK_STATE_IDLE;
@@ -54,7 +55,9 @@ static void LockFsm_PushSymbol(CodeSymbol_t const symbol)
 
 static void LockFsm_Validate(void)
 {
-    bool const matched = CodeStorage_Compare(s_entry_buffer, s_entry_count);
+    bool const code_matched = CodeStorage_Compare(s_entry_buffer, s_entry_count);
+    bool const dial_matched = DialLock_IsAtTargetZone();
+    bool const matched = code_matched && dial_matched;
 
     if (matched)
     {
@@ -91,6 +94,7 @@ static void LockFsm_Validate(void)
 void LockFsm_Init(LockFsm_NotifyCallback_t const notify_callback)
 {
     CodeStorage_Init();
+    DialLock_Init();
 
     s_notify_callback = notify_callback;
     s_state = LOCK_STATE_IDLE;
@@ -244,4 +248,22 @@ void LockFsm_ResetToDefault(void)
     s_hold_tick_counter = 0U;
     s_wrong_attempt_count = 0U;
     LockFsm_Notify(LOCK_NOTIFY_RETURN_TO_IDLE);
+}
+
+void LockFsm_OnDialViolation(void)
+{
+    if (s_state == LOCK_STATE_ENTERING)
+    {
+        s_state = LOCK_STATE_IDLE;
+        s_entry_count = 0U;
+        s_idle_tick_counter = 0U;
+        /* ไม่แตะ s_wrong_attempt_count โดยตั้งใจ - ถือว่าเป็นอุบัติเหตุ
+         * ไม่ใช่การเดารหัสผิด (ตามที่ตกลงกันไว้) */
+        LockFsm_Notify(LOCK_NOTIFY_DIAL_VIOLATION);
+    }
+    else
+    {
+        /* ไม่ได้อยู่ในสถานะ ENTERING (ไม่ควรเกิดขึ้นเพราะ watchdog เปิดใช้
+         * งานเฉพาะตอน ENTERING เท่านั้น) - ไม่ทำอะไร ป้องกันไว้เผื่อ edge case */
+    }
 }

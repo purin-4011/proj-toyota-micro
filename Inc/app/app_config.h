@@ -27,6 +27,25 @@
 #define APP_LED_RED_PORT       GPIOA_BASE
 #define APP_LED_RED_PIN        (6U)   /* PA6  - ผิด/ล็อกอยู่ */
 
+#define APP_LED_YELLOW_PORT    GPIOA_BASE
+#define APP_LED_YELLOW_PIN     (7U)   /* PA7 (D11) - ติดค้างระหว่างอยู่ใน Setup Mode */
+
+/* ---------------------------------------------------------------------- *
+ * ปุ่ม Setup Mode (เพิ่มใหม่)
+ * - PB5 (D4)  : กดค้าง >= APP_SETUP_ENTRY_HOLD_MS เพื่อเข้า Setup Mode,
+ *               กดสั้นเพื่อ confirm/exit แต่ละขั้นตอนภายใน Setup Mode
+ * - PA10 (D2) : เพิ่มจำนวนหลักรหัส (เฉพาะตอนขั้นเลือกจำนวนหลัก)
+ * - PB3 (D3)  : ลดจำนวนหลักรหัส (เฉพาะตอนขั้นเลือกจำนวนหลัก)
+ * ---------------------------------------------------------------------- */
+#define APP_SETUP_BUTTON_PORT   GPIOB_BASE
+#define APP_SETUP_BUTTON_PIN    (5U)
+
+#define APP_DIGIT_UP_PORT       GPIOA_BASE
+#define APP_DIGIT_UP_PIN        (10U)
+
+#define APP_DIGIT_DOWN_PORT     GPIOB_BASE
+#define APP_DIGIT_DOWN_PIN      (3U)
+
 /* ---------------------------------------------------------------------- *
  * Timing Thresholds (หน่วย: มิลลิวินาที)
  * ---------------------------------------------------------------------- */
@@ -34,6 +53,7 @@
 #define APP_INPUT_TIMEOUT_MS        (1500U)
 #define APP_LOCKOUT_DURATION_SEC    (9U)
 #define APP_MAX_WRONG_ATTEMPTS      (3U)
+#define APP_SETUP_ENTRY_HOLD_MS     (3000U)  /* ต้องกด PB5 ค้างนานเท่านี้ถึงจะเข้า Setup Mode */
 
 /* ---------------------------------------------------------------------- *
  * แปลงเวลาเป็นจำนวน TIM3 tick (1 tick = 100ms ตาม TIMER_DRIVER_TICK_MS)

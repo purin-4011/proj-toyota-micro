@@ -92,3 +92,21 @@ void DialLock_GetTargetZoneBounds(uint16_t * const p_low, uint16_t * const p_hig
         /* MISRA: else บังคับ — pointer เป็น NULL จะไม่เขียนอะไรออกไป */
     }
 }
+
+void DialLock_SetTargetZone(uint8_t zone)
+{
+    if (zone < 1U)
+    {
+        zone = 1U;
+    }
+    else if (zone > (uint8_t) DIAL_LOCK_ZONE_COUNT)
+    {
+        zone = (uint8_t) DIAL_LOCK_ZONE_COUNT;
+    }
+    else
+    {
+        /* อยู่ในขอบเขตแล้ว - ไม่ต้องทำอะไร */
+    }
+
+    s_target_zone = zone;
+}

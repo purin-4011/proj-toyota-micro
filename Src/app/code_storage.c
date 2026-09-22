@@ -109,3 +109,30 @@ uint8_t CodeStorage_GetLength(void)
 {
     return s_stored_length;
 }
+
+void CodeStorage_Commit(CodeSymbol_t const * const p_symbols, uint8_t length)
+{
+    uint8_t i;
+
+    /* กันขอบเขตไม่ให้เกิน buffer (Setup Mode ควร clamp มาให้แล้ว แต่กันไว้
+     * อีกชั้นตามหลัก defensive programming) */
+    if (length > (uint8_t) CODE_STORAGE_MAX_LENGTH)
+    {
+        length = (uint8_t) CODE_STORAGE_MAX_LENGTH;
+    }
+    else
+    {
+        /* อยู่ในขอบเขตแล้ว - ไม่ต้องทำอะไร */
+    }
+
+    for (i = 0U; i < length; i++)
+    {
+        s_stored_symbols[i] = p_symbols[i];
+    }
+    s_stored_length = length;
+
+    /* คำนวณ CRC อ้างอิงใหม่ทันที เหมือนที่ CodeStorage_Init ทำกับรหัส
+     * default - ทำให้ CodeStorage_Compare() ตรวจสอบรหัสใหม่นี้ได้ถูกต้อง
+     * ตั้งแต่การเปรียบเทียบครั้งถัดไป */
+    s_stored_code_crc = CodeStorage_ComputeCrc(s_stored_symbols, s_stored_length);
+}

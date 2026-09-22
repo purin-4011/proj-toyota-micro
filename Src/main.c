@@ -45,6 +45,7 @@
 #include "lock_fsm.h"
 #include "admin_command.h"
 #include "dial_lock.h"
+#include "setup_mode.h"
 #include "app_config.h"
 
 /* จำนวน tick (100ms/tick) ที่ต้องการให้ LED กระพริบสั้นๆ ตอบรับการกด/ผิด */
@@ -54,8 +55,14 @@
  * ตัวอักษร เผื่อไว้ให้พอสำหรับ error/edge case) */
 #define MAIN_ADMIN_LINE_MAX_LEN  (16U)
 
+/* ความยาวสูงสุดของข้อความ UART ที่ประกอบขึ้นเองใน Setup Mode (ยาวสุดคือ
+ * ข้อความสรุปตอน COMMITTED เช่น "SETUP SAVED: zone=9, 8 digit,
+ * short-short-...-long\r\n") */
+#define MAIN_UART_MSG_MAX_LEN   (100U)
+
 /* ตัวแปรที่ถูกแตะทั้งจาก ISR และ main loop ต้องเป็น volatile ตาม MISRA-C */
 static uint32_t volatile s_press_start_tick = 0U;
+static uint32_t volatile s_setup_press_start_tick = 0U;
 static uint16_t volatile s_green_blink_ticks_remaining = 0U;
 static uint16_t volatile s_red_blink_ticks_remaining = 0U;
 
@@ -65,12 +72,20 @@ static uint8_t s_admin_line_index = 0U;
 
 
 static void Main_ExtiEventHandler(EXTI_Edge_t edge);
+static void Main_ExtiSetupButtonHandler(EXTI_Edge_t edge);
+static void Main_ExtiDigitUpHandler(EXTI_Edge_t edge);
+static void Main_ExtiDigitDownHandler(EXTI_Edge_t edge);
 static void Main_Tim3TickHandler(void);
 static void Main_LockNotifyHandler(LockFsm_Notification_t notification);
+static void Main_SetupNotifyHandler(SetupMode_Notification_t notification);
 static void Main_UartRxHandler(uint8_t received_byte);
 static void Main_AdcEocHandler(uint16_t raw_value);
 static void Main_AdcWatchdogHandler(void);
 static void Main_HardwareInit(void);
+
+static void Main_AppendChar(char * p_buf, uint8_t * p_len, char c);
+static void Main_AppendStr(char * p_buf, uint8_t * p_len, char const * p_str);
+static void Main_AppendDigit(char * p_buf, uint8_t * p_len, uint8_t digit);
 
 int main(void)
 {
@@ -99,12 +114,21 @@ static void Main_HardwareInit(void)
     GPIO_Driver_Init(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_MODE_OUTPUT, GPIO_PULL_NONE);
     GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
 
+    GPIO_Driver_EnableClock(APP_LED_YELLOW_PORT);
+    GPIO_Driver_Init(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_MODE_OUTPUT, GPIO_PULL_NONE);
+    GPIO_Driver_WritePin(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_PIN_RESET);
+
     /* --- Timing subsystem (Two-Tier Architecture) --- */
     Timer_Driver_TIM2_Init();
     Timer_Driver_TIM3_Init(Main_Tim3TickHandler);
 
     /* --- Button input (EXTI4 บน PB4) --- */
     EXTI_Driver_Init(Main_ExtiEventHandler);
+
+    /* --- ปุ่ม Setup Mode ใหม่ (PB5/PA10/PB3) --- */
+    EXTI_Driver_InitSetupButton(Main_ExtiSetupButtonHandler);
+    EXTI_Driver_InitDigitUpButton(Main_ExtiDigitUpHandler);
+    EXTI_Driver_InitDigitDownButton(Main_ExtiDigitDownHandler);
 
     /* --- 7-segment (BCD) สำหรับแสดง lockout countdown --- */
     SevenSegment_Driver_Init();
@@ -123,12 +147,18 @@ static void Main_HardwareInit(void)
 
     /* --- State machine หลักของระบบล็อก --- */
     LockFsm_Init(Main_LockNotifyHandler);
+
+    /* --- Setup Mode (ต้อง init หลัง LockFsm_Init เพราะ Main_SetupNotifyHandler
+     *     จะเรียก LockFsm_ForceIdle() ตอนเข้า Setup Mode) --- */
+    SetupMode_Init(Main_SetupNotifyHandler);
 }
 
 /**
  * @brief  เรียกจาก EXTI4 ISR เมื่อปุ่มถูกกดหรือปล่อย
- *         คำนวณ duration จาก TIM2 tick แล้วส่งต่อให้ lock_fsm ตัดสินใจ
- *         (main.c ไม่ตัดสินใจ logic เองแล้ว แค่เป็นสะพานเชื่อม)
+ *         คำนวณ duration จาก TIM2 tick แล้วส่งต่อให้ lock_fsm หรือ
+ *         setup_mode ตัดสินใจ ขึ้นอยู่กับว่าตอนนี้อยู่ใน Setup Mode
+ *         ขั้นตอนกรอกรหัสหรือไม่ (main.c ไม่ตัดสินใจ logic เองแล้ว
+ *         แค่เป็นสะพานเชื่อม)
  */
 static void Main_ExtiEventHandler(EXTI_Edge_t const edge)
 {
@@ -142,7 +172,75 @@ static void Main_ExtiEventHandler(EXTI_Edge_t const edge)
         uint32_t const duration_ms  = release_tick - s_press_start_tick;
         CodeSymbol_t const symbol   = CodeDecoder_Classify(duration_ms);
 
-        LockFsm_OnSymbol(symbol, duration_ms);
+        if (SetupMode_GetState() == SETUP_STATE_ENTER_CODE)
+        {
+            /* อยู่ระหว่างกรอกรหัสใหม่ใน Setup Mode - ส่งให้ setup_mode
+             * แทน lock_fsm พร้อมกระพริบ LED feedback เหมือนโหมดปกติ */
+            SetupMode_OnCodeSymbol(symbol);
+
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_SET);
+            s_green_blink_ticks_remaining = (uint16_t) MAIN_BLINK_HOLD_TICKS;
+        }
+        else if (SetupMode_GetState() == SETUP_STATE_INACTIVE)
+        {
+            LockFsm_OnSymbol(symbol, duration_ms);
+        }
+        else
+        {
+            /* SETUP_STATE_SELECT_LENGTH - ปุ่มนี้ไม่มีบทบาทในขั้นนี้ */
+        }
+    }
+}
+
+/**
+ * @brief  เรียกจาก EXTI ISR ของปุ่ม Setup Mode (PB5) — วัดระยะเวลากดค้าง
+ *         เสมอ แล้วส่งให้ setup_mode ตัดสินใจความหมายตามสถานะปัจจุบัน
+ */
+static void Main_ExtiSetupButtonHandler(EXTI_Edge_t const edge)
+{
+    if (edge == EXTI_EDGE_RISING)
+    {
+        s_setup_press_start_tick = Timer_Driver_TIM2_GetTick();
+    }
+    else /* EXTI_EDGE_FALLING */
+    {
+        uint32_t const release_tick = Timer_Driver_TIM2_GetTick();
+        uint32_t const duration_ms  = release_tick - s_setup_press_start_tick;
+
+        SetupMode_OnButtonPB5(duration_ms);
+    }
+}
+
+/**
+ * @brief  เรียกจาก EXTI ISR ของปุ่มเพิ่มจำนวนหลัก (PA10) — ทำงานตอนปล่อย
+ *         ปุ่ม (EXTI_EDGE_FALLING ตามคอนเวนชันของ exti_driver นี้) เพื่อ
+ *         กันการกดค้างแล้วนับซ้ำ
+ */
+static void Main_ExtiDigitUpHandler(EXTI_Edge_t const edge)
+{
+    if (edge == EXTI_EDGE_FALLING)
+    {
+        SetupMode_OnDigitIncrement();
+    }
+    else
+    {
+        /* EXTI_EDGE_RISING (เพิ่งกดลง) - ไม่ทำอะไร */
+    }
+}
+
+/**
+ * @brief  เรียกจาก EXTI ISR ของปุ่มลดจำนวนหลัก (PB3) — หลักการเดียวกับ
+ *         Main_ExtiDigitUpHandler
+ */
+static void Main_ExtiDigitDownHandler(EXTI_Edge_t const edge)
+{
+    if (edge == EXTI_EDGE_FALLING)
+    {
+        SetupMode_OnDigitDecrement();
+    }
+    else
+    {
+        /* EXTI_EDGE_RISING (เพิ่งกดลง) - ไม่ทำอะไร */
     }
 }
 
@@ -304,6 +402,135 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
             /* MISRA: switch ต้องมี default case เสมอ แม้ enum จะครบทุกค่าแล้ว */
             break;
     }
+}
+
+/**
+ * @brief  เรียกจาก setup_mode เมื่อมีเหตุการณ์เกิดขึ้น (ผ่าน callback ที่
+ *         ลงทะเบียนไว้ตอน SetupMode_Init) — main.c เป็นคนตัดสินใจว่าจะ
+ *         แสดงผลยังไง (ไฟเหลือง + ข้อความ UART) ตามสเปค 6 ข้อที่ตกลงกัน
+ */
+static void Main_SetupNotifyHandler(SetupMode_Notification_t const notification)
+{
+    char msg_buf[MAIN_UART_MSG_MAX_LEN];
+    uint8_t msg_len = 0U;
+
+    switch (notification)
+    {
+        case SETUP_NOTIFY_ENTERED:
+            /* เข้า Setup Mode: ยกเลิกการกรอกรหัสปกติที่ค้างอยู่แบบปลอดภัย
+             * (ไม่แตะรหัสเดิม/ตัวนับกรอกผิด) แล้วเปิดไฟเหลืองค้างไว้ */
+            LockFsm_ForceIdle();
+            GPIO_Driver_WritePin(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_PIN_SET);
+            UART_Driver_SendString("\r\nSETUP MODE\r\n");
+            break;
+
+        case SETUP_NOTIFY_DIGIT_COUNT_CHANGED:
+            Main_AppendStr(msg_buf, &msg_len, "Digits: ");
+            Main_AppendDigit(msg_buf, &msg_len, SetupMode_GetTargetDigitCount());
+            Main_AppendStr(msg_buf, &msg_len, "\r\n");
+            UART_Driver_SendString(msg_buf);
+            break;
+
+        case SETUP_NOTIFY_CODE_START:
+            UART_Driver_SendString("Enter code (short/long)\r\n");
+            break;
+
+        case SETUP_NOTIFY_CODE_SYMBOL:
+        {
+            uint8_t const entered_count = SetupMode_GetEnteredCount();
+            CodeSymbol_t const last_symbol = SetupMode_GetEnteredSymbol((uint8_t) (entered_count - 1U));
+
+            Main_AppendStr(msg_buf, &msg_len, "Key ");
+            Main_AppendDigit(msg_buf, &msg_len, entered_count);
+            Main_AppendStr(msg_buf, &msg_len, ": ");
+            Main_AppendStr(msg_buf, &msg_len, (last_symbol == CODE_SYMBOL_LONG) ? "long" : "short");
+            Main_AppendStr(msg_buf, &msg_len, "\r\n");
+            UART_Driver_SendString(msg_buf);
+            break;
+        }
+
+        case SETUP_NOTIFY_WARNING_NO_LENGTH:
+            UART_Driver_SendString("WARNING: set digit count first\r\n");
+            break;
+
+        case SETUP_NOTIFY_WARNING_INCOMPLETE_CODE:
+            UART_Driver_SendString("WARNING: code not complete yet\r\n");
+            break;
+
+        case SETUP_NOTIFY_COMMITTED:
+        {
+            uint8_t const digit_count = SetupMode_GetTargetDigitCount();
+            uint8_t i;
+
+            Main_AppendStr(msg_buf, &msg_len, "SETUP SAVED: zone=");
+            Main_AppendDigit(msg_buf, &msg_len, SetupMode_GetLastCommittedZone());
+            Main_AppendStr(msg_buf, &msg_len, ", ");
+            Main_AppendDigit(msg_buf, &msg_len, digit_count);
+            Main_AppendStr(msg_buf, &msg_len, " digit, ");
+
+            for (i = 0U; i < digit_count; i++)
+            {
+                if (i > 0U)
+                {
+                    Main_AppendChar(msg_buf, &msg_len, '-');
+                }
+                else
+                {
+                    /* ตัวแรก - ไม่ต้องใส่ขีดคั่น */
+                }
+
+                Main_AppendStr(msg_buf, &msg_len,
+                    (SetupMode_GetEnteredSymbol(i) == CODE_SYMBOL_LONG) ? "long" : "short");
+            }
+            Main_AppendStr(msg_buf, &msg_len, "\r\n");
+            UART_Driver_SendString(msg_buf);
+
+            GPIO_Driver_WritePin(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_PIN_RESET);
+            break;
+        }
+
+        default:
+            /* MISRA: default บังคับ - ไม่ควรเกิด */
+            break;
+    }
+}
+
+/* ------------------------------------------------------------------------
+ * ตัวช่วยประกอบข้อความ UART (เฉพาะตัวเลขหลักเดียว 0-9 พอ เพราะทุกค่า
+ * dynamic ที่ต้องแสดงใน Setup Mode เป็นเลขหลักเดียวทั้งหมด) — จำเป็นต้อง
+ * ประกอบให้เสร็จใน buffer เดียวก่อนค่อยเรียก UART_Driver_SendString()
+ * เพราะฟังก์ชันนั้นไม่มี message queue (เรียกซ้ำก่อนส่งจบจะถูกทิ้ง)
+ * ------------------------------------------------------------------------ */
+static void Main_AppendChar(char * const p_buf, uint8_t * const p_len, char const c)
+{
+    if (*p_len < (uint8_t) (MAIN_UART_MSG_MAX_LEN - 1U))
+    {
+        p_buf[*p_len] = c;
+        (*p_len)++;
+    }
+    else
+    {
+        /* buffer เต็ม - ทิ้งอักขระส่วนเกิน (ป้องกัน overflow) */
+    }
+    p_buf[*p_len] = '\0';
+}
+
+static void Main_AppendStr(char * const p_buf, uint8_t * const p_len, char const * const p_str)
+{
+    uint8_t i = 0U;
+
+    while (p_str[i] != '\0')
+    {
+        Main_AppendChar(p_buf, p_len, p_str[i]);
+        i++;
+    }
+}
+
+static void Main_AppendDigit(char * const p_buf, uint8_t * const p_len, uint8_t const digit)
+{
+    uint8_t const clamped = (digit > 9U) ? 9U : digit;
+
+    Main_AppendChar(p_buf, p_len, (char) ('0' + clamped));
 }
 
 /**

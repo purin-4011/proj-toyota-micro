@@ -44,4 +44,10 @@ bool DialLock_IsAtTargetZone(void);
  */
 void DialLock_GetTargetZoneBounds(uint16_t * p_low, uint16_t * p_high);
 
+/**
+ * @brief  ตั้งโซนเป้าหมายใหม่ (ใช้ตอน Setup Mode บันทึกค่าที่ผู้ใช้เลือก)
+ * @param  zone : โซนเป้าหมายใหม่ (จะถูก clamp ให้อยู่ใน [1, DIAL_LOCK_ZONE_COUNT])
+ */
+void DialLock_SetTargetZone(uint8_t zone);
+
 #endif /* DIAL_LOCK_H */

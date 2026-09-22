@@ -267,3 +267,15 @@ void LockFsm_OnDialViolation(void)
          * งานเฉพาะตอน ENTERING เท่านั้น) - ไม่ทำอะไร ป้องกันไว้เผื่อ edge case */
     }
 }
+
+void LockFsm_ForceIdle(void)
+{
+    /* ตั้งใจ "ไม่" เรียก CodeStorage_Init() และ "ไม่" แตะ
+     * s_wrong_attempt_count - ใช้ตอนเข้า Setup Mode เพื่อยกเลิกการกรอก
+     * รหัสที่ค้างอยู่แบบปลอดภัย โดยไม่ล้างรหัสเดิมหรือประวัติกรอกผิด */
+    s_state = LOCK_STATE_IDLE;
+    s_entry_count = 0U;
+    s_idle_tick_counter = 0U;
+    s_hold_tick_counter = 0U;
+    LockFsm_Notify(LOCK_NOTIFY_RETURN_TO_IDLE);
+}

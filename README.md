@@ -1,163 +1,123 @@
-# Digital Combination Lock — เริ่มต้นจากศูนย์ (Register-level / Bare-metal)
+# Digital Combination Lock — STM32F411RE (Nucleo-64 + STEO Training Shield)
 
-โค้ดชุดนี้เขียนตามสไลด์คอร์สที่ตรวจสอบแล้ว (`0000_Intro.pdf`, `0100_GPIO.pdf`,
-`0500_Interrupts.pdf`) แบบ **hybrid ตามที่คอร์สสอนจริง**:
+โปรเจคกุญแจล็อกดิจิทัล 2 ชั้น (รหัสปุ่มกด SHORT/LONG + ตำแหน่งโพเทนชิโอมิเตอร์)
+เขียนแบบ **register-level bare-metal C** (ไม่ใช้ HAL/LL) แยก Driver/Application
+layer ชัดเจน ตามเกณฑ์วิชา
 
-- **Peripheral register (GPIO, EXTI, RCC, SYSCFG, Timer)** → define เป็น raw
-  address ตรงๆ (`#define X (*(volatile uint32_t*)(addr))`) ตามที่สอนใน
-  `0100_GPIO.pdf` Lab 1.1 Step 3
-- **NVIC (เปิด/ตั้ง priority interrupt)** → ใช้ CMSIS function
-  `NVIC_EnableIRQ()` / `NVIC_SetPriority()` เพราะสไลด์ `0500_Interrupts.pdf`
-  ระบุชัดว่า **"ต้องใช้ CMSIS"** สำหรับส่วนนี้โดยเฉพาะ (ไม่ใช่ raw register)
+> **หมายเหตุสำคัญ**: โปรเจคนี้ต่อยอดจากไฟล์ที่ผู้ใช้ยืนยันแล้วว่าทำงานถูกต้อง
+> (`A3.zip`) ส่วน Setup Mode ที่เพิ่มเข้ามาใหม่ถูกเขียนแบบ "คัดลอกโครงสร้าง
+> EXTI ที่ทดสอบผ่านแล้ว (PB4) มาปรับสำหรับปุ่มใหม่แต่ละตัว" แทนที่จะเขียน
+> เป็น generic function ตัวเดียวรองรับทุกขา เพื่อลดความเสี่ยงที่จะพลาดจุดใด
+> จุดหนึ่งของโค้ดเดิมที่ทดสอบผ่านแล้วระหว่างทำให้ generic
 
-ด้วยเหตุนี้ไฟล์ `exti_driver.c` และ `timer_driver.c` จึง `#include "stm32f411xe.h"`
-(เพื่อได้ enum `EXTI4_IRQn`/`TIM3_IRQn` และฟังก์ชัน NVIC) ส่วน `gpio_driver.c`
-ไม่ต้อง include เลยเพราะไม่แตะ NVIC — ไฟล์ .c/.h ทั้งหมดในนี้ **ใช้งานได้ทันที
-โดยไม่ต้องมีโปรเจคหรือโค้ดอะไรมาก่อนเลย** ขอแค่ทำตามขั้นตอนที่ 0 ด้านล่าง
+## โครงสร้างโปรเจค
 
----
+```
+Inc/
+  drivers/   gpio, exti, timer, seven_segment, adc, uart, crc  (แตะ register/NVIC ตรงๆ)
+  app/       app_config, code_decoder, code_storage, dial_lock,
+             lock_fsm, setup_mode, admin_command               (pure logic)
+Src/
+  drivers/*.c
+  app/*.c
+  main.c            <- ผูก driver เข้ากับ application ทั้งหมด (จุดเดียวที่มี ISR wiring)
+  syscalls_stub.c   <- stub เฉย ๆ ให้ linker หา _read/_write/... เจอ (newlib-nano)
+```
 
-## ขั้นตอนที่ 0: สร้างโปรเจค STM32CubeIDE จากศูนย์
+**การตั้งค่า CubeIDE**: ต้องเพิ่ม `Inc/drivers` และ `Inc/app` เข้าไปใน
+Project Properties → C/C++ General → Paths and Symbols → Includes (ทั้ง GNU C)
 
-(สรุปจาก `0000_Intro.pdf` Chapter 0.8 ให้ทำตามนี้ทีละขั้น)
+## Pin Map (Arduino-style / STM32 style)
 
-1. เปิด STM32CubeIDE (เวอร์ชัน 1.15.1 ขึ้นไป)
-2. เลือก workspace folder ที่ต้องการ แล้วกด **Launch**
-3. ดาวน์โหลดไฟล์ Library จากลิงก์ในสไลด์คอร์ส:
-   `https://steo.moodlecloud.com/pluginfile.php/2643/mod_folder/content/0/Supplement/Library.zip`
-   แล้ว extract วางไว้ใน workspace folder ที่เลือกไว้ (จะได้โฟลเดอร์ `Library`)
-4. คลิก **File > New > STM32 Project**
-5. ไปที่แท็บ **Board Selector** พิมพ์ `F411RE` ใน Commercial Part Number
-   แล้วเลือกบอร์ดในลิสต์ กด **Next**
-6. ตั้งชื่อโปรเจค (เช่น `Digital_Combination_Lock`)
-   ที่ **Targeted Project Type** เลือก **Empty** แล้วกด **Finish**
-7. คลิกขวาที่โปรเจค > **Properties**
-8. ไปที่ **C/C++ General > Paths and Symbols > Includes** แท็บ
-9. กด **Add** แล้วเพิ่ม 2 โฟลเดอร์นี้:
-   - `Workspace\Library\CMSIS-DEVICE-F4\Include`
-   - `Workspace\Library\CMSIS\Core\Include`
-10. กด **Apply and Close** แล้วถ้ามี popup ถาม **Rebuild Index** ให้กดยืนยัน
+| หน้าที่ | Arduino | STM32 pin | EXTI Line | หมายเหตุ |
+|---|---|---|---|---|
+| ปุ่มกรอกรหัสหลัก | D5 | PB4 | EXTI4 (dedicated) | active-low, internal pull-up — เหมือนเดิมไม่แก้ไข |
+| ปุ่มเข้า/ออก Setup Mode | D4 | PB5 | EXTI9_5 (shared) | active-low, internal pull-up |
+| ปุ่มเพิ่มจำนวนหลัก (Setup) | D2 | PA10 | EXTI15_10 (shared) | active-low, internal pull-up |
+| ปุ่มลดจำนวนหลัก (Setup) | D3 | PB3 | EXTI3 (dedicated) | active-low, internal pull-up |
+| LED feedback กดปุ่ม (สีฟ้าบนชิลด์นี้) | D13 | PA5 | | |
+| LED สำเร็จ (เขียวจริง) | D10 | PB6 | | |
+| LED ผิด/ล็อกเอาต์ | D12 | PA6 | | |
+| LED Setup Mode (เหลือง) | D11 | PA7 | | |
+| Potentiometer | A0 | PA4 (ADC1_IN4) | | |
+| UART Admin (ผ่าน ST-Link VCP) | - | PA2 (TX) / PA3 (RX) | | 9600 8N1 |
+| 7-segment BCD 2^0..2^3 | - | PC7 / PA8 / PB10 / PA9 | | |
 
-ตอนนี้คุณจะมีโปรเจคเปล่าพร้อมใช้งาน (มี `Src/main.c`, `Src/system_stm32f4xx.c`,
-`Src/startup_stm32f411xetx.s` และ linker script ให้อัตโนมัติจากตัว wizard)
+## สถาปัตยกรรมเวลา (Two-Tier Timing)
 
----
+- **TIM2**: นับ ms แบบ free-running ไม่มี interrupt ใช้วัดระยะเวลากดปุ่ม (SHORT/LONG)
+- **TIM3**: interrupt ทุก 100 ms ขับ tick หลักของแอป (input timeout, lockout
+  countdown, unlock-hold timeout, LED blink) ผ่าน `LockFsm_OnTick()`
 
-## ขั้นตอนที่ 1: คัดลอกไฟล์จาก zip นี้เข้าไปในโปรเจค
+## ฟีเจอร์หลัก
 
-1. เปิดโฟลเดอร์ `Digital_Combination_Lock` ที่แตกจาก zip นี้
-2. คัดลอกไฟล์ `.h` ทั้งหมดจาก `Inc/drivers/` และ `Inc/app/` ไปวางที่โฟลเดอร์
-   `Inc/` ของโปรเจคจริงใน CubeIDE (คงชื่อไฟล์ไว้ตามเดิม)
-3. คัดลอกไฟล์ `.c` ทั้งหมดจาก `Src/drivers/` และ `Src/app/` ไปวางที่โฟลเดอร์
-   `Src/` ของโปรเจคจริง
-4. **ลบเนื้อหาใน `Src/main.c` เดิมของโปรเจคทิ้งทั้งหมด** แล้ววางเนื้อหาจาก
-   `Src/main.c` ในไฟล์นี้แทน
-5. คลิกขวาโปรเจค > **Refresh** (หรือกด F5) ให้ CubeIDE เห็นไฟล์ใหม่ทั้งหมด
+1. **กรอกรหัส SHORT/LONG** ผ่าน PB4 — < 500 ms = SHORT, >= 500 ms = LONG
+2. **ล็อกสองชั้น**: ต้องกรอกรหัสถูก **และ** โพเทนชิโอมิเตอร์อยู่ในโซนเป้าหมาย
+   (9 โซน) พร้อมกัน ถ้าหมุนโพเทนชิโอมิเตอร์หลุดโซนกลางคันระหว่างกรอกรหัส
+   (ที่เริ่มต้นถูกโซนอยู่แล้ว) จะถูกตรวจจับทันทีด้วย **ADC Analog Watchdog**
+3. **Lockout 9 วินาที** หลังกรอกผิดครบ 3 ครั้ง พร้อมนับถอยหลังบน 7-segment
+4. **CRC-32 integrity check**: ทุกครั้งที่เทียบรหัส จะคำนวณ CRC ของรหัสที่
+   เก็บใน RAM ใหม่เทียบกับค่าอ้างอิง ถ้าไม่ตรง (ข้อมูลเสียหาย) จะ self-heal
+   กลับเป็นรหัส default อัตโนมัติ
+5. **UART Admin Mode**: พิมพ์คำสั่ง `UNLOCK`, `LOCKOUT`, `RESET` แล้ว Enter
+6. **Setup Mode** (เพิ่มใหม่รอบนี้) — ดูวิธีทดสอบด้านล่าง
 
-## ขั้นตอนที่ 2: Build และ Upload
+## Setup Mode — วิธีทดสอบ
 
-1. กดปุ่ม **Build** (ค้อน) — ถ้าไม่มี error จะเห็น `Build Finished` ที่ Console
-2. เสียบบอร์ด Nucleo-F411RE ผ่าน USB
-3. กดปุ่ม **Run/Debug** เพื่ออัพโหลดโปรแกรมลงบอร์ด
-4. ทดสอบ: กดปุ่มสั้น (SHORT) 4 ครั้งติดกัน (รหัส default คือ
-   SHORT-SHORT-SHORT-SHORT) — ระหว่างกดแต่ละครั้ง 7-segment ควรขึ้นเลข
-   1, 2, 3, 4 ตามจำนวนหลักที่กดไปแล้ว แล้วหยุด 1.5 วิ -> LED เขียว (PA7)
-   ติดค้าง 10 วิ ถ้ากดรหัสผิด -> LED แดง (PA6) กระพริบสั้นๆ, 7-segment
-   กลับเป็น 0 แล้วกลับ IDLE ให้ลองใหม่
-   ถ้าผิดครบ 3 ครั้ง -> LED แดงติดค้าง 9 วิ + 7-segment นับถอยหลัง 9→0
-5. ทดสอบ Admin Mode: เปิด Serial Terminal (PuTTY/Tera Term/Serial Monitor)
-   ต่อกับ COM port ของ ST-Link (baud 9600, 8N1) พิมพ์ `UNLOCK` แล้ว Enter
-   -> ควรเห็นข้อความ `OK: Unlocked` ตอบกลับ และ LED/7-segment เปลี่ยนตาม
-   ทันทีไม่ว่าระบบจะอยู่สถานะไหนอยู่ก่อนหน้า (ลองคำสั่ง `LOCKOUT` และ
-   `RESET` ด้วยเช่นกัน — พิมพ์ตัวพิมพ์ใหญ่เท่านั้น)
-6. ทดสอบล็อก 2 ชั้น (potentiometer): หมุน potentiometer — 7-segment ควร
-   ขึ้นเลข 1-9 ตามตำแหน่งที่หมุนอยู่แบบ real-time หมุนไปค้างที่เลข **5**
-   (โซนเป้าหมาย default) แล้วค่อยกดรหัสปุ่มสั้น 4 ครั้งตามปกติ -> ควรปลดล็อก
-   สำเร็จเหมือนเดิม แต่ถ้าลองกดรหัสถูกแต่ **ไม่ได้หมุนไปโซน 5 ก่อน** หรือ
-   **มือไปโดน potentiometer จนหลุดโซนระหว่างกำลังกดรหัสอยู่** -> ระบบจะ
-   ยกเลิกทันที (LED แดงกะพริบเตือน) ไม่ปลดล็อก แม้รหัสปุ่มจะถูกก็ตาม
+1. ที่โหมดปกติ (รอกรอกรหัส) กด **PB5 ค้างไว้ >= 3 วินาที** แล้วปล่อย → ไฟเหลือง
+   (PA7) ติดค้าง, UART พิมพ์ `SETUP MODE` (การกรอกรหัสปกติที่ค้างอยู่ ถ้ามี
+   จะถูกยกเลิกอย่างปลอดภัย โดยไม่แตะรหัสเดิมหรือตัวนับกรอกผิด)
+2. หมุนโพเทนชิโอมิเตอร์ไปโซนที่ต้องการ — เลขโซนขึ้นบน 7-segment ตลอด Setup Mode
+3. กด **PA10** เพื่อเพิ่มจำนวนหลักรหัส (เริ่มที่ 0), กด **PB3** เพื่อลด
+   (clamp 0-8) — UART พิมพ์ `Digits: N` ทุกครั้งที่เปลี่ยน
+4. ได้จำนวนหลักที่ต้องการแล้ว (ต้อง > 0) กด **PB5** สั้น ๆ — UART พิมพ์
+   `Enter code (short/long)` แล้วเริ่มกรอกรหัสใหม่ผ่าน **PB4** ทุกปุ่มที่กด
+   จะ echo ออก UART เช่น `Key 1: short`
+5. กรอกครบแล้วกด **PB5** อีกครั้งเพื่อยืนยัน/ออก — UART พิมพ์สรุป เช่น
+   `SETUP SAVED: zone=6, 3 digit, short-short-long` แล้วบันทึกรหัส+โซนใหม่
+   (ผ่าน CRC เดียวกับที่ใช้ตรวจสอบตอนปลดล็อก) ไฟเหลืองดับ กลับสู่โหมดปกติ
 
----
+## ข้อควรระวังด้านฮาร์ดแวร์
 
-## โครงสร้างไฟล์และหน้าที่
+- ทุกขาที่ใช้เป็น GPIO ทำงานที่ 3.3V logic เท่านั้น — ห้ามต่อสัญญาณ 5V ตรง ๆ
+  เข้าขา MCU โดยไม่มี level shifter
+- กระแสสูงสุดต่อขา GPIO ของ STM32F411 อยู่ที่ประมาณ 20 mA
+- `UART_TX_BUFFER_SIZE` (64 bytes ตามเดิม) — ข้อความ Setup Mode ที่ยาวที่สุด
+  (สรุป 8 หลัก) ยาวประมาณ 55-60 ตัวอักษร ยังอยู่ในขอบเขต แต่ถ้าจะเพิ่ม
+  ข้อความยาวกว่านี้ในอนาคตต้องขยายบัฟเฟอร์ด้วย
+- `UART_Driver_SendString` ไม่มี message queue — ห้ามเรียกซ้ำสองครั้งติดกัน
+  ก่อนข้อความแรกส่งจบ (ข้อความหลังจะถูกทิ้ง) main.c จึงประกอบข้อความ Setup
+  Mode ทั้งหมดใน buffer เดียว (`Main_Append*`) ก่อนค่อยเรียกส่งครั้งเดียว
 
-| ไฟล์ | หน้าที่ |
-|---|---|
-| `Inc/drivers/gpio_driver.h` + `Src/drivers/gpio_driver.c` | Init/Read/Write GPIO แบบ raw register address |
-| `Inc/drivers/exti_driver.h` + `Src/drivers/exti_driver.c` | จับ press/release ปุ่ม PB4 ผ่าน EXTI4 |
-| `Inc/drivers/timer_driver.h` + `Src/drivers/timer_driver.c` | TIM2 free-running (ms tick) + TIM3 periodic 100ms |
-| `Inc/app/code_decoder.h` + `Src/app/code_decoder.c` | pure logic แปลง duration -> SHORT/LONG |
-| `Inc/app/code_storage.h` + `Src/app/code_storage.c` | เก็บรหัส default ใน RAM + เทียบรหัส |
-| `Inc/app/lock_fsm.h` + `Src/app/lock_fsm.c` | state machine หลัก (IDLE/ENTERING/UNLOCKED/LOCKED_OUT) |
-| `Inc/app/app_config.h` | pin mapping + threshold รวมจุดเดียว (⚠️ BCD pin ยังเป็น placeholder) |
-| `Inc/drivers/seven_segment_driver.h` + `Src/drivers/seven_segment_driver.c` | ส่งเลข 0-9 ผ่าน BCD 4 ขา ให้ driver IC บน shield แปลงเป็นลายไฟเอง |
-| `Inc/drivers/uart_driver.h` + `Src/drivers/uart_driver.c` | USART2 (PA2/PA3) interrupt-driven ทั้ง RX (รับคำสั่ง) และ TX (ส่งข้อความตอบกลับ) |
-| `Inc/app/admin_command.h` + `Src/app/admin_command.c` | pure logic ตีความบรรทัดคำสั่ง UNLOCK/LOCKOUT/RESET |
-| `Inc/drivers/adc_driver.h` + `Src/drivers/adc_driver.c` | ADC1 Channel 4 (PA4) continuous + interrupt + Analog Watchdog |
-| `Inc/app/dial_lock.h` + `Src/app/dial_lock.c` | pure logic แปลงค่า ADC เป็นโซน 1-9 + เทียบกับโซนเป้าหมาย |
-| `Src/main.c` | ต่อทุกอย่างเข้าด้วยกัน เป็นตัวล็อกที่ใช้งานได้จริง |
-| `Src/syscalls_stub.c` | stub แก้ linker error จากโปรเจคแบบ Empty (ดูหัวข้อด้านล่าง) |
+## หมายเหตุเกี่ยวกับปัญหา "LED ไม่ติด" ในซับมิตก่อนหน้า
 
-**ทำไมไม่มีไฟล์ `.c` ของ `app_config.h`?** เพราะเป็นแค่ค่าคงที่ (`#define`)
-ไม่มี logic ให้ implement จึงมีแค่ header อย่างเดียว
+การตรวจสอบโค้ดใน `A3.zip` (ทั้ง GPIO/EXTI/Timer/lock_fsm/main.c) แบบ
+line-by-line ไม่พบ logic bug ใดที่จะอธิบายอาการ "LED ไม่ติดไม่ว่าจะกดปุ่มไหน"
+ได้ — ผู้ใช้ยืนยันว่า `A3.zip` (ก่อนเพิ่ม Setup Mode) ทำงานถูกต้องอยู่แล้ว
+และปัญหาเกิดจากไฟล์ที่ส่งให้รอบก่อนหน้า (ที่เขียน `exti_driver` ใหม่แบบ
+generic function ตัวเดียว) แทน จึงตัดสินใจไม่ไล่บั๊กในไฟล์เก่านั้นต่อ
+แต่กลับมาต่อยอด Setup Mode บน `A3.zip` โดยตรง และเลือกเขียน EXTI สำหรับ
+ปุ่มใหม่แบบ "คัดลอกฟังก์ชันที่ทดสอบผ่านแล้ว" แทน generic function เพื่อ
+ลดความเสี่ยงที่จะเกิดปัญหาแบบเดิมซ้ำ
 
----
+## Peripheral ที่ใช้ (สรุปตามเกณฑ์วิชา)
 
-## หมายเหตุสำคัญก่อนทดสอบจริง
+| เกณฑ์ | Peripheral | เหตุผลที่ต้องใช้จริง (ไม่ใช่แค่ให้ครบ) |
+|---|---|---|
+| GPIO | ปุ่ม, LED, 7-segment BCD | พื้นฐานของ input/output ทั้งหมด |
+| UART (interrupt) | USART2 Admin console | รับคำสั่งจากภายนอกแบบ asynchronous โดยไม่บล็อก main loop |
+| ADC (interrupt) | ADC1 CH4 potentiometer | อ่านค่า analog ต่อเนื่องแบบไม่ blocking |
+| EXTI | PB4/PB5/PA10/PB3 | จับจังหวะกด/ปล่อยปุ่มแบบทันที ไม่พลาด edge |
+| Additional: Timer | TIM2 (free-run) + TIM3 (periodic) | วัดระยะเวลากดปุ่ม + ขับ tick หลักของระบบ |
+| Additional: CRC | CRC-32 hardware | ตรวจสอบความถูกต้องของรหัสใน RAM แบบ real-time |
+| Additional: ADC Analog Watchdog | ADC1 AWD | ตรวจจับการหลุดโซนโพเทนชิโอมิเตอร์แบบฮาร์ดแวร์ล้วน |
 
-- โค้ดสมมติว่า timer clock = 16 MHz (HSI default) — ถ้าตั้ง SystemClock เป็น
-  ความถี่อื่นภายหลัง ต้องแก้ `TIMER_DRIVER_TIMCLK_HZ` ใน `timer_driver.h`
-- ปุ่มสมมติว่าต่อแบบ **active-low พร้อม internal pull-up** (กด = 0V, ปล่อย = 3.3V)
-  ถ้าวงจรจริงของ Training Shield ต่างจากนี้ ต้องแก้ logic ใน `EXTI4_IRQHandler`
-- Threshold SHORT/LONG ตั้งไว้ 500ms เป็นค่าเริ่มต้น ควรปรับจากการทดสอบจริง
-- **Timer มี shadow register:** ถ้าแก้ `timer_driver.c` เพิ่มเติมในอนาคต
-  ต้องจำไว้เสมอว่าเขียน PSC/ARR แล้วต้องสั่ง `EGR.UG = 1` บังคับ update
-  event ก่อนเริ่มนับ (`CEN = 1`) ไม่งั้นค่า prescaler จะยังไม่มีผลจริง
-  (บั๊กนี้เจอจริงระหว่างทดสอบ — ทำให้กดสั้นก็ถูกอ่านเป็น LONG เสมอ)
-- **ถ้า build แล้วเจอ `undefined reference to _close/_lseek/_read/_write`:**
-  ให้เพิ่มไฟล์ `Src/syscalls_stub.c` เข้าไปในโปรเจค (โปรเจคแบบ Empty ไม่ gen
-  syscalls.c ให้อัตโนมัติ)
-- ✅ **Pin ของ 7-segment BCD ยืนยันแล้วจาก `Guide_Exam_1.pdf`** (ตาราง pin
-  mapping อย่างเป็นทางการ): 2⁰=PC7, 2¹=PA8, 2²=PB10, 2³=PA9 — อัพเดตใน
-  `app_config.h` เรียบร้อยแล้ว ไม่ใช่ placeholder อีกต่อไป
-  (หมายเหตุจากสไลด์: ถ้าใช้ shield สีน้ำเงิน silkscreen บนบอร์ดจะผิด ให้ยึด
-  ตาราง pin นี้แทนเสมอ)
-- ⚠️ **LED เขียวเปลี่ยนจาก PA5 เป็น PA7 แล้ว** เพราะทดสอบจริงพบว่า PA5 คือ
-  สีฟ้า ไม่ใช่เขียว — ถ้า PA7 ก็ยังไม่ใช่สีเขียวอีก ให้ลองสลับเป็น PB6 (D10)
-  แทน (แก้ที่ `APP_LED_GREEN_PORT`/`APP_LED_GREEN_PIN` ใน `app_config.h`
-  จุดเดียวพอ ไม่ต้องไปตามแก้ที่อื่น เพราะทุกจุดใน `main.c` อ้างอิง macro นี้)
-- ✅ **7-segment แสดงจำนวนหลักที่ป้อนระหว่าง ENTERING แล้ว** (1, 2, 3, ...)
-  ผ่าน `LockFsm_GetEntryCount()` — อัพเดตทุกครั้งที่กดปุ่ม และล้างกลับเป็น 0
-  เมื่อจบรอบ (ไม่ว่าถูก, ผิด, หรือกลับสู่ IDLE)
-- ✅ **Admin Mode ผ่าน UART (USART2, 9600 baud, 8N1) พร้อมใช้งานแล้ว**
-  รองรับคำสั่ง `UNLOCK`, `LOCKOUT`, `RESET` (พิมพ์ตัวพิมพ์ใหญ่ + Enter)
-  ทำงานได้ทุกเวลาไม่ว่า user จะกำลังทำอะไรอยู่ เพราะรับ-ส่งผ่าน interrupt
-  ล้วนๆ (RXNE สำหรับรับ, TXE สำหรับส่ง) — ไม่มี polling เลยสักจุด
-  ต่อผ่าน ST-Link Virtual COM Port ได้เลย ไม่ต้องเดินสายเพิ่ม (PA2=TX, PA3=RX)
-- ✅ **ล็อก 2 ชั้นด้วย potentiometer (ADC1 Channel 4, PA4) พร้อมใช้งานแล้ว**
-  แบ่ง 0-4095 เป็น 9 โซน โซนเป้าหมาย default = 5 ต้องหมุนไปค้างไว้ที่โซนนี้
-  **ก่อน** แล้วค่อยกดรหัสปุ่ม ถ้าหลุดโซนระหว่างกำลังกดรหัสอยู่ ระบบยกเลิก
-  ทันที (ไม่นับเป็นรหัสผิด ไม่กระทบ wrong_attempt_count) — ตรวจจับด้วย
-  **ADC Analog Watchdog** (วงจรเปรียบเทียบในฮาร์ดแวร์ของ ADC เอง สร้าง
-  interrupt ทันทีที่ค่าออกนอกช่วง โดย CPU ไม่ต้อง sample เทียบเอง) เปิดใช้
-  เฉพาะตอนสถานะ ENTERING เท่านั้น (ไม่เปิดตลอดเวลาเพื่อไม่ให้ interrupt
-  รัวตอน IDLE) — pin ADC (PA4) ตรงกับที่ proposal เดิมระบุไว้ (ADC1 CH4)
+## สถานะ
 
-## ยังไม่ได้ทำ (ตาม Timeline สัปดาห์ 2-4)
-
-- [ ] **โหมดตั้งรหัสใหม่ (Setup mode)** — ต้องคิดเรื่องปุ่ม "ยืนยัน" แยกจาก
-      การป้อนรหัสให้ชัดเจนก่อน (ตอนนี้ตกลงกันไว้ว่าจะใช้ timeout เหมือน
-      ปลดล็อกปกติไปพลางก่อน)
-- [ ] `CodeStorage_Commit()` — ฟังก์ชันตั้งรหัสใหม่ (ยังไม่มี เพราะยังไม่มี
-      โหมดตั้งรหัสให้เรียกใช้)
-- [ ] `DialLock` ยังไม่มีฟังก์ชันเปลี่ยนโซนเป้าหมาย (เหมือน `CodeStorage`
-      ยังไม่มี Commit — รอ Setup mode เดียวกัน)
-- [ ] CRC (Additional Peripheral) — ตรวจสอบความถูกต้องของรหัสที่เก็บไว้
-- [ ] Audit log ผ่าน UART (บันทึกเวลาที่พยายามปลดล็อกและผลลัพธ์ ส่งออกทาง
-      USART2 อัตโนมัติ — ตอนนี้ UART มีแค่ฝั่งรับคำสั่ง admin เท่านั้น)
-- [ ] แสดงผล "Un"/"Er" หรือจำนวนครั้งที่ผิดบน 7-segment ตอนสถานะอื่น
-      (ตอนนี้ 7-segment อัพเดตเฉพาะตอน LOCKED_OUT/ENTERING/IDLE เท่านั้น)
-
-**ยืนยันแล้ว (ไม่ต้องคิดต่อ):**
-- เปลี่ยนความยาวรหัสตอนมีรหัสเดิมอยู่แล้ว = **reset รหัสทั้งหมด**
-- รหัสเก็บใน **RAM เท่านั้น** — ไฟดับ = รหัสหาย ไม่ persist ลง Flash
+ทุกไฟล์ผ่านการตรวจ syntax ด้วย `gcc -std=c99 -Wall -Wextra -fsyntax-only`
+เรียบร้อย (ไม่มี warning) — ยังไม่ได้ build จริงบน CubeIDE/ARM toolchain
+เพราะ environment นี้ไม่มี CMSIS/arm-none-eabi-gcc ให้ใช้ **กรุณา build บน
+เครื่องจริงและทดสอบปุ่ม PB4 เดิมก่อนว่ายังทำงานเหมือน A3.zig ทุกประการ
+ก่อนค่อยทดสอบ Setup Mode ต่อ** — ถ้าปุ่มเดิมมีปัญหาแปลว่าไม่เกี่ยวกับ
+Setup Mode ที่เพิ่มเข้ามา ให้แจ้งอาการละเอียด (build ผ่านไหม, LED/7-segment/
+UART ตัวไหนทำงานบ้าง) เพื่อตามหาสาเหตุต่อ

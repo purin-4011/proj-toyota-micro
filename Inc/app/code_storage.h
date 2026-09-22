@@ -36,4 +36,14 @@ bool CodeStorage_Compare(CodeSymbol_t const * p_symbols, uint8_t length);
 /** อ่านความยาวของรหัสที่เก็บไว้ปัจจุบัน */
 uint8_t CodeStorage_GetLength(void);
 
+/**
+ * @brief  บันทึกรหัสใหม่ (จาก Setup Mode) ทับรหัสเดิม แล้วคำนวณ/เก็บ CRC
+ *         อ้างอิงใหม่ทันที (หลักการเดียวกับ CodeStorage_Init แต่ใช้ข้อมูล
+ *         ที่ผู้ใช้กำหนดเองแทนค่า default)
+ * @param  p_symbols : อาเรย์สัญลักษณ์รหัสใหม่
+ * @param  length    : จำนวนสัญลักษณ์ของรหัสใหม่ (จะถูก clamp ไม่เกิน
+ *                     CODE_STORAGE_MAX_LENGTH)
+ */
+void CodeStorage_Commit(CodeSymbol_t const * p_symbols, uint8_t length);
+
 #endif /* CODE_STORAGE_H */

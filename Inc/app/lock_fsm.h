@@ -109,4 +109,12 @@ void LockFsm_ResetToDefault(void);
  */
 void LockFsm_OnDialViolation(void);
 
+/**
+ * @brief  บังคับกลับสู่สถานะ IDLE โดยไม่แตะรหัสที่เก็บไว้และไม่แตะตัวนับ
+ *         จำนวนครั้งกรอกผิด (ต่างจาก LockFsm_ResetToDefault ที่ล้างรหัส
+ *         กลับเป็นค่า default ด้วย) ใช้ตอนเข้า Setup Mode เพื่อยกเลิก
+ *         การกรอกรหัสที่ค้างอยู่แบบปลอดภัย
+ */
+void LockFsm_ForceIdle(void);
+
 #endif /* LOCK_FSM_H */

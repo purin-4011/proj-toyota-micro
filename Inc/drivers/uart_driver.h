@@ -22,9 +22,12 @@
 typedef void (*UART_RxByteCallback_t)(uint8_t received_byte);
 
 /**
- * @brief  เริ่มต้น USART2 ที่ baud rate 9600 (เลือกค่าที่ทนต่อความคลาดเคลื่อน
- *         ของ HSI ได้ดี ไม่ต้องพึ่งพา external crystal ที่แม่นกว่า)
+ * @brief  เริ่มต้น USART2 ที่ baud rate 115200 (เร็วกว่า 9600 เดิม ~12 เท่า
+ *         เพื่อให้ตัวอักษรขึ้นบน serial terminal เร็วขึ้น ยัง error ต่ำพอ
+ *         ที่จะใช้กับ HSI internal clock ได้โดยไม่ต้องพึ่ง external crystal)
  *         เปิดทั้ง RX interrupt และเตรียม TX ให้พร้อมส่งแบบ interrupt-driven
+ * @note   ต้องตั้งค่า baud rate ของโปรแกรม serial terminal (PuTTY/Tera Term/
+ *         Serial Monitor ฯลฯ) เป็น 115200 ด้วย ไม่งั้นจะเห็นตัวอักษรเพี้ยน
  * @param  rx_callback : ฟังก์ชันที่ถูกเรียกทุกครั้งที่รับ byte ใหม่ (ห้าม NULL)
  */
 void UART_Driver_Init(UART_RxByteCallback_t rx_callback);

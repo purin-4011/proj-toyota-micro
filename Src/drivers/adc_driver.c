@@ -49,7 +49,17 @@
 
 #define ADC_POT_CHANNEL           (4U)   /* ADC1_IN4 = PA4 */
 #define ADC_SMPR2_CH4_SHIFT       (12U)  /* channel 4 field อยู่ที่ bit [14:12] */
-#define ADC_SAMPLE_TIME_28CYC     (0x3U) /* 011 = 28 cycles, พอเหมาะกับ potentiometer */
+/* 111 = 480 cycles (ค่าช้าสุด) — เดิมใช้ 28 cycles ทำให้ EOC interrupt เกิด
+ * ถี่ถึง ~200,000 ครั้ง/วินาที จน CPU วนอยู่ใน ADC ISR เกือบตลอด และ
+ * UART (priority เท่ากัน) แทบไม่ได้ทำงาน -> ตัวอักษรออกช้า
+ * potentiometer หมุนด้วยมือ ไม่จำเป็นต้องอ่านเร็วขนาดนั้น */
+#define ADC_SAMPLE_TIME_480CYC    (0x7U)
+
+/* --- ADC Common register (ใช้ร่วมกันทุก ADC) — ตั้ง prescaler ของ ADC clock --- */
+#define ADC_COMMON_BASE           (0x40012300UL)
+#define ADC_COMMON_OFFSET_CCR     (0x04UL)
+#define ADC_CCR_ADCPRE_SHIFT      (16U)
+#define ADC_CCR_ADCPRE_DIV8       (0x3U)  /* 11 = PCLK2/8 = 16MHz/8 = 2MHz */
 
 /** ตำแหน่งใน Vector Table ของ ADC_IRQHandler (ADC1/2/3 ใช้ร่วมกัน, RM0383 Table 38) */
 #define ADC_IRQN                   (18U)
@@ -80,8 +90,16 @@ void ADC_Driver_Init(ADC_EocCallback_t const eoc_callback)
         /* 3) ตั้ง sample time ของ channel 4 */
         smpr2_val = REG32(ADC1_BASE + ADC_OFFSET_SMPR2);
         smpr2_val &= ~(0x7UL << ADC_SMPR2_CH4_SHIFT);
-        smpr2_val |= (ADC_SAMPLE_TIME_28CYC << ADC_SMPR2_CH4_SHIFT);
+        smpr2_val |= (ADC_SAMPLE_TIME_480CYC << ADC_SMPR2_CH4_SHIFT);
         REG32(ADC1_BASE + ADC_OFFSET_SMPR2) = smpr2_val;
+
+        /* 3.1) ลด ADC clock เป็น PCLK2/8 = 2 MHz (ค่า reset คือ /2 = 8 MHz)
+         *      เวลาแปลง 1 ครั้ง = (480 + 12) cycles / 2 MHz = 246 us
+         *      -> EOC interrupt ~4,000 ครั้ง/วินาที (ลดลง ~50 เท่า) ยังเร็ว
+         *      พอให้ 7-segment และ Analog Watchdog ตอบสนองทันทีในสายตาคน */
+        REG32(ADC_COMMON_BASE + ADC_COMMON_OFFSET_CCR) =
+            (REG32(ADC_COMMON_BASE + ADC_COMMON_OFFSET_CCR) & ~(0x3UL << ADC_CCR_ADCPRE_SHIFT))
+            | (ADC_CCR_ADCPRE_DIV8 << ADC_CCR_ADCPRE_SHIFT);
 
         /* 4) ตั้งลำดับการแปลงค่าให้มีแค่ channel เดียว (SQR3.SQ1 = channel 4,
          *    SQR1.L เป็น 0000 อยู่แล้วตั้งแต่ reset = 1 conversion พอดี) */
@@ -111,7 +129,9 @@ void ADC_Driver_Init(ADC_EocCallback_t const eoc_callback)
 
         /* 8) ตั้ง priority = 3 (เท่ากับ UART เพราะไม่ time-critical เท่า
          *    ปุ่ม/countdown) แล้วเปิด NVIC ให้ ADC_IRQn ผ่าน CMSIS function */
-        NVIC_SetPriority(ADC_IRQn, 3U);
+        /* priority = 4 (ต่ำสุดในระบบ) ให้ต่ำกว่า UART (3) เพื่อให้ UART
+         * ขัดจังหวะ ADC ได้เสมอ ข้อความจึงไม่ถูก ADC แย่งเวลา */
+        NVIC_SetPriority(ADC_IRQn, 4U);
         NVIC_EnableIRQ(ADC_IRQn);
     }
     else

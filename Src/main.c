@@ -43,6 +43,7 @@
 #include "crc_driver.h"
 #include "code_decoder.h"
 #include "lock_fsm.h"
+#include "code_storage.h"
 #include "admin_command.h"
 #include "dial_lock.h"
 #include "setup_mode.h"
@@ -83,6 +84,9 @@ static void Main_AdcEocHandler(uint16_t raw_value);
 static void Main_AdcWatchdogHandler(void);
 static void Main_HardwareInit(void);
 
+static void Main_SendCurrentPassword(void);
+static void Main_AppendSymbolPattern(char * p_buf, uint8_t * p_len,
+                                     CodeSymbol_t (*get_symbol)(uint8_t), uint8_t count);
 static void Main_AppendChar(char * p_buf, uint8_t * p_len, char c);
 static void Main_AppendStr(char * p_buf, uint8_t * p_len, char const * p_str);
 static void Main_AppendDigit(char * p_buf, uint8_t * p_len, uint8_t digit);
@@ -332,19 +336,17 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
              * ตอน validate เหมือนกดรหัสปุ่มผิดปกติ (ตามที่ต้องการ) */
             if (LockFsm_GetEntryCount() == 1U)
             {
-                if (DialLock_IsAtTargetZone())
-                {
-                    uint16_t dial_low;
-                    uint16_t dial_high;
+                /* ปุ่มแรกของรอบ: ล็อกโซนที่ potentiometer อยู่ "ตอนนี้"
+                 * (ไม่ใช่โซนเป้าหมาย) ให้ Analog Watchdog เฝ้าดูว่า
+                 * potentiometer อยู่กับที่ตลอดการกดรหัส ถ้าขยับหลุดโซนนี้
+                 * กลางคัน -> ยกเลิกรอบทันที
+                 * ส่วนการตรวจว่าโซนนี้เป็นโซนที่ถูกต้องหรือไม่ ทำตอน
+                 * validate ใน lock_fsm (DialLock_IsAtTargetZone) แยกกัน */
+                uint16_t dial_low;
+                uint16_t dial_high;
 
-                    DialLock_GetTargetZoneBounds(&dial_low, &dial_high);
-                    ADC_Driver_EnableWatchdog(dial_low, dial_high, Main_AdcWatchdogHandler);
-                }
-                else
-                {
-                    /* poten ผิดโซนตั้งแต่ก่อนกดปุ่มแรก - ไม่เปิด watchdog
-                     * รอบนี้ จะไปเจอผลตอน validate แทน */
-                }
+                DialLock_GetCurrentZoneBounds(&dial_low, &dial_high);
+                ADC_Driver_EnableWatchdog(dial_low, dial_high, Main_AdcWatchdogHandler);
             }
             else
             {
@@ -460,28 +462,13 @@ static void Main_SetupNotifyHandler(SetupMode_Notification_t const notification)
         case SETUP_NOTIFY_COMMITTED:
         {
             uint8_t const digit_count = SetupMode_GetTargetDigitCount();
-            uint8_t i;
 
             Main_AppendStr(msg_buf, &msg_len, "SETUP SAVED: zone=");
             Main_AppendDigit(msg_buf, &msg_len, SetupMode_GetLastCommittedZone());
             Main_AppendStr(msg_buf, &msg_len, ", ");
             Main_AppendDigit(msg_buf, &msg_len, digit_count);
             Main_AppendStr(msg_buf, &msg_len, " digit, ");
-
-            for (i = 0U; i < digit_count; i++)
-            {
-                if (i > 0U)
-                {
-                    Main_AppendChar(msg_buf, &msg_len, '-');
-                }
-                else
-                {
-                    /* ตัวแรก - ไม่ต้องใส่ขีดคั่น */
-                }
-
-                Main_AppendStr(msg_buf, &msg_len,
-                    (SetupMode_GetEnteredSymbol(i) == CODE_SYMBOL_LONG) ? "long" : "short");
-            }
+            Main_AppendSymbolPattern(msg_buf, &msg_len, SetupMode_GetEnteredSymbol, digit_count);
             Main_AppendStr(msg_buf, &msg_len, "\r\n");
             UART_Driver_SendString(msg_buf);
 
@@ -492,6 +479,52 @@ static void Main_SetupNotifyHandler(SetupMode_Notification_t const notification)
         default:
             /* MISRA: default บังคับ - ไม่ควรเกิด */
             break;
+    }
+}
+
+/**
+ * @brief  คำสั่ง admin "SHOWPASS" — ส่งรหัสผ่านและโซนเป้าหมายปัจจุบันออก
+ *         UART ในรูปแบบเดียวกับข้อความสรุปของ Setup Mode เช่น
+ *         "PASS: zone=5, 4 digit, short-short-short-short"
+ */
+static void Main_SendCurrentPassword(void)
+{
+    char msg_buf[MAIN_UART_MSG_MAX_LEN];
+    uint8_t msg_len = 0U;
+    uint8_t const digit_count = CodeStorage_GetLength();
+
+    Main_AppendStr(msg_buf, &msg_len, "PASS: zone=");
+    Main_AppendDigit(msg_buf, &msg_len, DialLock_GetTargetZone());
+    Main_AppendStr(msg_buf, &msg_len, ", ");
+    Main_AppendDigit(msg_buf, &msg_len, digit_count);
+    Main_AppendStr(msg_buf, &msg_len, " digit, ");
+    Main_AppendSymbolPattern(msg_buf, &msg_len, CodeStorage_GetSymbol, digit_count);
+    Main_AppendStr(msg_buf, &msg_len, "\r\n");
+
+    UART_Driver_SendString(msg_buf);
+}
+
+/**
+ * @brief  ต่อรูปแบบรหัส "short-long-..." ลง buffer โดยอ่านสัญลักษณ์ทีละตัว
+ *         ผ่านฟังก์ชัน get_symbol (ใช้ร่วมกันทั้ง SHOWPASS และสรุป Setup Mode)
+ */
+static void Main_AppendSymbolPattern(char * const p_buf, uint8_t * const p_len,
+                                     CodeSymbol_t (*get_symbol)(uint8_t), uint8_t const count)
+{
+    uint8_t i;
+
+    for (i = 0U; i < count; i++)
+    {
+        if (i > 0U)
+        {
+            Main_AppendChar(p_buf, p_len, '-');
+        }
+        else
+        {
+            /* ตัวแรก - ไม่ต้องใส่ขีดคั่น */
+        }
+
+        Main_AppendStr(p_buf, p_len, (get_symbol(i) == CODE_SYMBOL_LONG) ? "long" : "short");
     }
 }
 
@@ -566,6 +599,10 @@ static void Main_UartRxHandler(uint8_t const received_byte)
                 case ADMIN_CMD_RESET:
                     LockFsm_ResetToDefault();
                     UART_Driver_SendString("OK: Code reset to default\r\n");
+                    break;
+
+                case ADMIN_CMD_SHOWPASS:
+                    Main_SendCurrentPassword();
                     break;
 
                 default:

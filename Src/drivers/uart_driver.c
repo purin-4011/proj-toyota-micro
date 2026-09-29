@@ -45,14 +45,19 @@
 /** ตำแหน่งใน Vector Table ของ USART2_IRQHandler (RM0383 Table 38) */
 #define USART2_IRQN                (38U)
 
-/** BRR สำหรับ 9600 baud ที่ APB1 clock = 16MHz (HSI default, ไม่มี PLL)
- *  USARTDIV = 16,000,000 / (16 * 9600) = 104.1667
- *  Mantissa = 104 (0x68), Fraction = round(0.1667*16) = 3 (0x3)
- *  BRR = (Mantissa << 4) | Fraction */
-#define UART_BRR_9600_AT_16MHZ    (0x0683UL)
+/** BRR สำหรับ 115200 baud ที่ APB1 clock = 16MHz (HSI default, ไม่มี PLL)
+ *  (ปรับจาก 9600 -> 115200 เพราะตัวอักษรขึ้นบน serial terminal ช้าเกินไป
+ *  ที่ 9600; 115200 คือค่ามาตรฐานที่ terminal ทั่วไปรองรับและยัง error
+ *  ต่ำพอสำหรับ USART ที่ไม่มี external crystal)
+ *  USARTDIV = 16,000,000 / (16 * 115200) = 8.6806
+ *  Mantissa = 8 (0x8), Fraction = round(0.6806*16) = 11 (0xB)
+ *  BRR = (Mantissa << 4) | Fraction = 0x8B (error จริง ~0.08%) */
+#define UART_BRR_115200_AT_16MHZ    (0x008BUL)
 
 /** ความยาวสูงสุดของข้อความที่ส่งออกได้ต่อครั้ง (รวม null terminator) */
-#define UART_TX_BUFFER_SIZE        (64U)
+#define UART_TX_BUFFER_SIZE        (128U)   /* เดิม 64 - ขยายเพราะข้อความรหัส 8 หลัก
+                                              * ("PASS: zone=5, 8 digit, long-long-...")
+                                              * ยาวได้ถึง ~80 ตัวอักษร จะถูกตัดท้าย */
 
 static UART_RxByteCallback_t volatile s_rx_callback = (UART_RxByteCallback_t) 0;
 
@@ -95,7 +100,7 @@ void UART_Driver_Init(UART_RxByteCallback_t const rx_callback)
         REG32(GPIOA_BASE + GPIOA_OFFSET_AFRL) = afrl_val;
 
         /* 3) ตั้ง baud rate */
-        REG32(USART2_BASE + USART_OFFSET_BRR) = UART_BRR_9600_AT_16MHZ;
+        REG32(USART2_BASE + USART_OFFSET_BRR) = UART_BRR_115200_AT_16MHZ;
 
         /* 4) เปิด TE (transmit enable), RE (receive enable), RXNEIE
          *    (รับ interrupt ทุกครั้งที่มี byte เข้ามาใหม่) แล้วเปิด UE

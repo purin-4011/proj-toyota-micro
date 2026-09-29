@@ -47,6 +47,11 @@ uint8_t DialLock_GetCurrentZone(void)
     return DialLock_RawToZone(s_latest_raw_value);
 }
 
+uint8_t DialLock_GetTargetZone(void)
+{
+    return s_target_zone;
+}
+
 bool DialLock_IsAtTargetZone(void)
 {
     bool result;
@@ -63,25 +68,30 @@ bool DialLock_IsAtTargetZone(void)
     return result;
 }
 
-void DialLock_GetTargetZoneBounds(uint16_t * const p_low, uint16_t * const p_high)
+/**
+ * @brief  คำนวณขอบเขตค่า ADC ดิบ (low, high) ของโซนที่ระบุ (ใช้ร่วมกันทั้ง
+ *         โซนเป้าหมายและโซนปัจจุบัน)
+ */
+static void DialLock_ZoneBounds(uint8_t const zone, uint16_t * const p_low, uint16_t * const p_high)
 {
     if ((p_low != (uint16_t *) 0) && (p_high != (uint16_t *) 0))
     {
         uint32_t low_calc;
         uint32_t high_calc;
 
-        low_calc = ((uint32_t) s_target_zone - 1U) * (uint32_t) DIAL_LOCK_ZONE_WIDTH;
-        high_calc = ((uint32_t) s_target_zone * (uint32_t) DIAL_LOCK_ZONE_WIDTH) - 1U;
+        low_calc = ((uint32_t) zone - 1U) * (uint32_t) DIAL_LOCK_ZONE_WIDTH;
 
-        if (high_calc > (uint32_t) DIAL_LOCK_ADC_MAX)
+        if (zone >= (uint8_t) DIAL_LOCK_ZONE_COUNT)
         {
-            /* โซนสุดท้ายอาจมีเศษเหลือจากการหารไม่ลงตัว ให้ครอบคลุมถึง
-             * ค่าสูงสุดของ ADC จริง (4095) เสมอ */
+            /* โซนสุดท้ายต้องครอบคลุมถึงค่าสูงสุดของ ADC จริง (4095) เสมอ
+             * เพราะ DialLock_RawToZone ปัดค่าที่เหลือจากการหารไม่ลงตัว
+             * (4095 / 455 = 9) เข้าโซนสุดท้าย ถ้าไม่ครอบคลุม Analog
+             * Watchdog จะแจ้งหลุดโซนทันทีตอนหมุนสุดปลาย */
             high_calc = (uint32_t) DIAL_LOCK_ADC_MAX;
         }
         else
         {
-            /* อยู่ในขอบเขตปกติ ไม่ต้องปรับ */
+            high_calc = ((uint32_t) zone * (uint32_t) DIAL_LOCK_ZONE_WIDTH) - 1U;
         }
 
         *p_low = (uint16_t) low_calc;
@@ -91,6 +101,16 @@ void DialLock_GetTargetZoneBounds(uint16_t * const p_low, uint16_t * const p_hig
     {
         /* MISRA: else บังคับ — pointer เป็น NULL จะไม่เขียนอะไรออกไป */
     }
+}
+
+void DialLock_GetTargetZoneBounds(uint16_t * const p_low, uint16_t * const p_high)
+{
+    DialLock_ZoneBounds(s_target_zone, p_low, p_high);
+}
+
+void DialLock_GetCurrentZoneBounds(uint16_t * const p_low, uint16_t * const p_high)
+{
+    DialLock_ZoneBounds(DialLock_GetCurrentZone(), p_low, p_high);
 }
 
 void DialLock_SetTargetZone(uint8_t zone)

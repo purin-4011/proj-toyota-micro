@@ -7,7 +7,8 @@
  *          คำสั่งที่รองรับ (พิมพ์ใหญ่ทั้งหมด แล้วกด Enter):
  *            UNLOCK   -> สั่งปลดล็อกทันที
  *            LOCKOUT  -> สั่งเข้าสู่ lockout ทันที
- *            RESET    -> สั่งรีเซ็ตรหัสกลับเป็นค่า default
+ *            RESET    -> สั่งรีเซ็ตรหัสและโซนเป้าหมายกลับเป็นค่า default
+ *            SHOWPASS -> แสดงรหัสผ่านและโซนเป้าหมายปัจจุบันทาง UART
  ******************************************************************************/
 #ifndef ADMIN_COMMAND_H
 #define ADMIN_COMMAND_H
@@ -19,7 +20,8 @@ typedef enum
     ADMIN_CMD_UNKNOWN = 0U,
     ADMIN_CMD_UNLOCK,
     ADMIN_CMD_LOCKOUT,
-    ADMIN_CMD_RESET
+    ADMIN_CMD_RESET,
+    ADMIN_CMD_SHOWPASS
 } AdminCommand_t;
 
 /**

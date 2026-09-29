@@ -241,7 +241,13 @@ void LockFsm_ForceLockout(void)
 
 void LockFsm_ResetToDefault(void)
 {
+    /* คืนค่าทั้ง 2 ชั้นกลับเป็น default พร้อมกัน: รหัส (short x4) และโซน
+     * เป้าหมาย (โซน 5) — เดิมคืนแค่รหัส ทำให้หลัง RESET โซนยังค้างเป็นค่าที่
+     * ตั้งจาก Setup Mode
+     * ใช้ SetTargetZone แทน DialLock_Init เพราะ Init จะล้างค่า ADC ล่าสุด
+     * เป็น 0 ด้วย ทำให้ 7-segment กระพริบเป็นโซน 1 ชั่วขณะ */
     CodeStorage_Init();
+    DialLock_SetTargetZone((uint8_t) DIAL_LOCK_DEFAULT_TARGET_ZONE);
     s_state = LOCK_STATE_IDLE;
     s_entry_count = 0U;
     s_idle_tick_counter = 0U;

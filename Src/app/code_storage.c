@@ -110,6 +110,22 @@ uint8_t CodeStorage_GetLength(void)
     return s_stored_length;
 }
 
+CodeSymbol_t CodeStorage_GetSymbol(uint8_t const index)
+{
+    CodeSymbol_t result;
+
+    if (index < s_stored_length)
+    {
+        result = s_stored_symbols[index];
+    }
+    else
+    {
+        result = CODE_SYMBOL_SHORT;   /* index เกินความยาวรหัส - คืนค่าปลอดภัย */
+    }
+
+    return result;
+}
+
 void CodeStorage_Commit(CodeSymbol_t const * const p_symbols, uint8_t length)
 {
     uint8_t i;

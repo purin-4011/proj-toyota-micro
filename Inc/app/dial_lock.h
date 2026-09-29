@@ -34,6 +34,9 @@ void DialLock_UpdateRaw(uint16_t raw_value);
 /** อ่านโซนปัจจุบัน (1-9) จากค่า ADC ล่าสุดที่อัพเดตไว้ */
 uint8_t DialLock_GetCurrentZone(void);
 
+/** อ่านโซนเป้าหมายปัจจุบัน (1-9) */
+uint8_t DialLock_GetTargetZone(void);
+
 /** เช็คว่าโซนปัจจุบันตรงกับโซนเป้าหมายหรือไม่ */
 bool DialLock_IsAtTargetZone(void);
 
@@ -43,6 +46,14 @@ bool DialLock_IsAtTargetZone(void);
  * @param  p_low, p_high : ตัวชี้ที่จะรับค่าขอบเขตออกไป (ห้าม NULL)
  */
 void DialLock_GetTargetZoneBounds(uint16_t * p_low, uint16_t * p_high);
+
+/**
+ * @brief  คำนวณขอบเขตค่า ADC ดิบ (low, high) ของโซนที่ potentiometer อยู่
+ *         "ตอนนี้" (ไม่ใช่โซนเป้าหมาย) — ใช้ตั้ง Analog Watchdog ตอนเริ่ม
+ *         กดรหัส เพื่อเฝ้าดูว่า potentiometer อยู่กับที่ตลอดการกดรหัส
+ * @param  p_low, p_high : ตัวชี้ที่จะรับค่าขอบเขตออกไป (ห้าม NULL)
+ */
+void DialLock_GetCurrentZoneBounds(uint16_t * p_low, uint16_t * p_high);
 
 /**
  * @brief  ตั้งโซนเป้าหมายใหม่ (ใช้ตอน Setup Mode บันทึกค่าที่ผู้ใช้เลือก)

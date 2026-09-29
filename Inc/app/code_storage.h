@@ -37,6 +37,12 @@ bool CodeStorage_Compare(CodeSymbol_t const * p_symbols, uint8_t length);
 uint8_t CodeStorage_GetLength(void);
 
 /**
+ * @brief  อ่านสัญลักษณ์ตำแหน่งที่ index ของรหัสที่เก็บไว้ (ใช้แสดงรหัสผ่าน
+ *         ทาง admin console) คืน CODE_SYMBOL_SHORT ถ้า index เกินความยาว
+ */
+CodeSymbol_t CodeStorage_GetSymbol(uint8_t index);
+
+/**
  * @brief  บันทึกรหัสใหม่ (จาก Setup Mode) ทับรหัสเดิม แล้วคำนวณ/เก็บ CRC
  *         อ้างอิงใหม่ทันที (หลักการเดียวกับ CodeStorage_Init แต่ใช้ข้อมูล
  *         ที่ผู้ใช้กำหนดเองแทนค่า default)

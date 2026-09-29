@@ -7,8 +7,11 @@
  *          คำสั่งที่รองรับ (พิมพ์ใหญ่ทั้งหมด แล้วกด Enter):
  *            UNLOCK   -> สั่งปลดล็อกทันที
  *            LOCKOUT  -> สั่งเข้าสู่ lockout ทันที
- *            RESET    -> สั่งรีเซ็ตรหัสและโซนเป้าหมายกลับเป็นค่า default
+ *            RESET    -> ปกติ: สั่งรีเซ็ตรหัสและโซนเป้าหมายกลับเป็นค่า default
+ *                        ตอน DISABLED (อุณหภูมิผิดปกติ): ล้าง alarm อย่างเดียว
+ *                        รหัสและโซนที่ตั้งไว้ยังอยู่ครบ
  *            SHOWPASS -> แสดงรหัสผ่านและโซนเป้าหมายปัจจุบันทาง UART
+ *            STATUS   -> แสดงสถานะระบบ อุณหภูมิ และความสว่าง
  ******************************************************************************/
 #ifndef ADMIN_COMMAND_H
 #define ADMIN_COMMAND_H
@@ -21,7 +24,8 @@ typedef enum
     ADMIN_CMD_UNLOCK,
     ADMIN_CMD_LOCKOUT,
     ADMIN_CMD_RESET,
-    ADMIN_CMD_SHOWPASS
+    ADMIN_CMD_SHOWPASS,
+    ADMIN_CMD_STATUS
 } AdminCommand_t;
 
 /**

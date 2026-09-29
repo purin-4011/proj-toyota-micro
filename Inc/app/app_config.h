@@ -81,4 +81,40 @@
 #define APP_SEG_BCD_D_PORT   GPIOA_BASE   /* 2^3 (MSB) -> PA9 */
 #define APP_SEG_BCD_D_PIN    (9U)
 
+/* ---------------------------------------------------------------------- *
+ * เซนเซอร์สภาพแวดล้อม (ADC injected: PA0 = NTC, PA1 = LDR)
+ * ค่าวงจรและสูตรยืนยันจาก Lab 4.2 / Lab 4.3 (Voltage divider: Rx 10k ต่อ
+ * VCC, เซนเซอร์ต่อ GND, Vout เข้า ADC)
+ * ---------------------------------------------------------------------- */
+#define APP_ADC_MAX_RAW             (4095.0f)
+#define APP_NTC_RX_OHM              (10000.0f)
+#define APP_NTC_R0_OHM              (10000.0f)   /* ความต้านทาน NTC ที่ T0 */
+#define APP_NTC_T0_KELVIN           (298.15f)    /* 25 องศา */
+#define APP_NTC_BETA                (3950.0f)
+#define APP_LDR_RX_OHM              (10000.0f)
+#define APP_LDR_SLOPE               (-0.6875f)   /* log10(R) = SLOPE*log10(lux) + OFFSET */
+#define APP_LDR_OFFSET              (5.1276f)
+
+/* อ่าน NTC + LDR ทุกกี่ tick ของ TIM3 (2 x 100ms = ทุก 200ms) */
+#define APP_ENV_SAMPLE_TICKS        (2U)
+/* จำนวน sample แรกหลังบูตที่ใช้หาค่าเฉลี่ยเป็น "ค่าปกติ" (5 x 200ms = 1 วินาที) */
+#define APP_ENV_BASELINE_SAMPLES    (5U)
+
+/* อุณหภูมิผิดปกติ = ต่างจากค่าปกติเกินเท่านี้ (องศา) ติดต่อกันกี่ sample */
+#define APP_TEMP_TAMPER_DELTA_C         (3.0f)
+#define APP_TEMP_TAMPER_CONFIRM_SAMPLES (3U)     /* 3 x 200ms = 0.6 วินาที กันค่ากระตุก */
+/* ค่าปกติของอุณหภูมิขยับตามห้องอย่างช้าๆ (ทุก sample ขยับ 1/1500 ของส่วนต่าง
+ * = time constant ~5 นาที) อุณหภูมิห้องที่ค่อยๆ เปลี่ยนจึงไม่ทำให้ alarm
+ * แต่การเป่าไฟ/จับด้วยมือ (เปลี่ยนเร็ว) ยังจับได้ */
+#define APP_TEMP_BASELINE_TRACK_DIV     (1500.0f)
+
+/* มีคนอยู่ใกล้ = แสงลดลงต่ำกว่ากี่ % ของค่าปกติตอนบูต (โดนบังแสง) */
+#define APP_PRESENCE_LUX_PERCENT    (50.0f)
+
+/* ไม่มีคน + ไม่มีการกดปุ่ม นานเท่านี้ -> เข้า sleep (150 x 100ms = 15 วินาที) */
+#define APP_SLEEP_IDLE_TICKS        (150U)
+
+/* สถานะ DISABLED: LED แดงกระพริบทุกกี่ tick (5 x 100ms = 0.5 วินาที) */
+#define APP_DISABLED_BLINK_TICKS    (5U)
+
 #endif /* APP_CONFIG_H */

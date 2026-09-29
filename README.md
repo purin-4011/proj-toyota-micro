@@ -59,8 +59,17 @@ Project Properties → C/C++ General → Paths and Symbols → Includes (ทั�
 4. **CRC-32 integrity check**: ทุกครั้งที่เทียบรหัส จะคำนวณ CRC ของรหัสที่
    เก็บใน RAM ใหม่เทียบกับค่าอ้างอิง ถ้าไม่ตรง (ข้อมูลเสียหาย) จะ self-heal
    กลับเป็นรหัส default อัตโนมัติ
-5. **UART Admin Mode**: พิมพ์คำสั่ง `UNLOCK`, `LOCKOUT`, `RESET` แล้ว Enter
-6. **Setup Mode** (เพิ่มใหม่รอบนี้) — ดูวิธีทดสอบด้านล่าง
+5. **UART Admin Mode**: พิมพ์คำสั่ง `UNLOCK`, `LOCKOUT`, `RESET`, `SHOWPASS`,
+   `STATUS` แล้ว Enter
+6. **Setup Mode** — ดูวิธีทดสอบด้านล่าง
+7. **Sleep เมื่อไม่มีคน (LDR, PA1)**: สว่าง + ไม่กดปุ่ม 15 วินาที -> ดับจอ ไม่รับปุ่ม
+   CPU หลับด้วย WFI / มีคนมาบังแสง (แสงลดลงต่ำกว่า 50% ของค่าตอนบูต) -> ตื่น
+   ไม่ sleep ระหว่างกรอกรหัส/ปลดล็อก/lockout/Setup Mode
+8. **Temperature tamper (NTC, PA0)**: อุณหภูมิต่างจากค่าปกติเกิน 3 องศา
+   ติดกัน 0.6 วินาที -> DISABLED (LED แดงกระพริบ ปฏิเสธทุกปุ่ม) ค้างจนกว่า
+   admin สั่ง `RESET` ค่าปกติขยับตามห้องช้าๆ (~5 นาที) จึงไม่ alarm ตอนห้อง
+   ค่อยๆ ร้อน/เย็น — ถ้าสาย NTC ขาดก็จะ alarm ด้วย (fail-secure)
+   NTC + LDR อ่านผ่าน ADC **injected group** ทุก 200ms (TIM3 สั่ง, JEOC interrupt)
 
 ## Setup Mode — วิธีทดสอบ
 

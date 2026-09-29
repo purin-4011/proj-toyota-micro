@@ -47,6 +47,15 @@ void SevenSegment_Driver_Init(void)
     SevenSegment_Driver_ShowDigit(0U);
 }
 
+void SevenSegment_Driver_Blank(void)
+{
+    /* ส่ง 1111 ตรงๆ (ไม่ผ่าน ShowDigit เพราะ ShowDigit clamp ค่าไว้ไม่เกิน 9) */
+    GPIO_Driver_WritePin(APP_SEG_BCD_A_PORT, APP_SEG_BCD_A_PIN, GPIO_PIN_SET);
+    GPIO_Driver_WritePin(APP_SEG_BCD_B_PORT, APP_SEG_BCD_B_PIN, GPIO_PIN_SET);
+    GPIO_Driver_WritePin(APP_SEG_BCD_C_PORT, APP_SEG_BCD_C_PIN, GPIO_PIN_SET);
+    GPIO_Driver_WritePin(APP_SEG_BCD_D_PORT, APP_SEG_BCD_D_PIN, GPIO_PIN_SET);
+}
+
 void SevenSegment_Driver_ShowDigit(uint8_t digit)
 {
     if (digit > SEVEN_SEGMENT_MAX_DIGIT)

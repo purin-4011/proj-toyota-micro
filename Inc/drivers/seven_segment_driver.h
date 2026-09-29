@@ -25,4 +25,12 @@ void SevenSegment_Driver_Init(void);
  */
 void SevenSegment_Driver_ShowDigit(uint8_t digit);
 
+/**
+ * @brief  ดับจอ 7-segment โดยส่งรหัส BCD 1111 (15) — IC ถอดรหัส BCD ทั่วไป
+ *         (CD4511 / 74HC4511 / 74LS47) จะไม่แสดงอะไรเมื่อได้ค่านี้
+ *         หมายเหตุ: ยังไม่ได้ยืนยันกับ IC บน Training Shield จริง ถ้าจอยัง
+ *         แสดงสัญลักษณ์แปลกๆ แทนการดับ ให้เปลี่ยนไปใช้ ShowDigit(0) แทน
+ */
+void SevenSegment_Driver_Blank(void);
+
 #endif /* SEVEN_SEGMENT_DRIVER_H */

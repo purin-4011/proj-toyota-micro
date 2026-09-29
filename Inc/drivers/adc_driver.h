@@ -26,13 +26,28 @@ typedef void (*ADC_EocCallback_t)(uint16_t raw_value);
 /** เรียกเมื่อ Analog Watchdog ตรวจพบว่าค่าออกนอกช่วงที่กำหนดไว้ */
 typedef void (*ADC_WatchdogCallback_t)(void);
 
+/** เรียกเมื่อ injected group แปลงเสร็จครบ (JEOC) ส่งค่าดิบ NTC และ LDR (0-4095) */
+typedef void (*ADC_InjectedCallback_t)(uint16_t ntc_raw, uint16_t ldr_raw);
+
 /**
- * @brief  เริ่มต้น ADC1 Channel 4 (PA4) ให้แปลงค่าต่อเนื่อง (continuous mode)
- *         พร้อมเปิด EOC interrupt ทุกครั้งที่แปลงเสร็จ ยังไม่เปิด Analog
- *         Watchdog (เรียก ADC_Driver_EnableWatchdog แยกเมื่อต้องการ)
- * @param  eoc_callback : ฟังก์ชันที่ถูกเรียกทุกครั้งที่แปลงค่าเสร็จ (ห้าม NULL)
+ * @brief  เริ่มต้น ADC1:
+ *         - Regular group: Channel 4 (PA4, potentiometer) แปลงต่อเนื่อง +
+ *           EOC interrupt (ยังไม่เปิด Analog Watchdog)
+ *         - Injected group: Channel 0 (PA0, NTC) และ Channel 1 (PA1, LDR)
+ *           แปลงเมื่อสั่ง ADC_Driver_StartInjected() + JEOC interrupt
+ * @param  eoc_callback      : เรียกทุกครั้งที่ potentiometer แปลงเสร็จ (ห้าม NULL)
+ * @param  injected_callback : เรียกเมื่อ NTC + LDR แปลงเสร็จครบ (ห้าม NULL)
  */
-void ADC_Driver_Init(ADC_EocCallback_t eoc_callback);
+void ADC_Driver_Init(ADC_EocCallback_t eoc_callback, ADC_InjectedCallback_t injected_callback);
+
+/** สั่งแปลง injected group (NTC + LDR) 1 รอบ ผลมาทาง injected callback */
+void ADC_Driver_StartInjected(void);
+
+/** หยุดการแปลง potentiometer แบบต่อเนื่อง (ใช้ตอน sleep) */
+void ADC_Driver_PauseRegular(void);
+
+/** กลับมาแปลง potentiometer แบบต่อเนื่อง (ใช้ตอนตื่นจาก sleep) */
+void ADC_Driver_ResumeRegular(void);
 
 /** อ่านค่าดิบล่าสุดที่แปลงได้ (0-4095) โดยไม่ต้องรอ conversion ใหม่ */
 uint16_t ADC_Driver_GetLatestValue(void);

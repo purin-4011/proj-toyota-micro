@@ -161,6 +161,13 @@ void SetupMode_OnCodeSymbol(CodeSymbol_t const symbol)
     }
 }
 
+void SetupMode_Cancel(void)
+{
+    s_state = SETUP_STATE_INACTIVE;
+    s_target_digit_count = 0U;
+    s_entry_count = 0U;
+}
+
 SetupState_t SetupMode_GetState(void)
 {
     return s_state;

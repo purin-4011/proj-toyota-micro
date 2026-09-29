@@ -202,8 +202,14 @@ void USART2_IRQHandler(void)
         /* ไม่ใช่ RXNE - ไม่ทำอะไรในส่วนนี้ */
     }
 
-    /* --- TXE: พร้อมส่ง byte ถัดไป --- */
-    if ((sr_val & (1UL << USART_SR_TXE_BIT)) != 0U)
+    /* --- TXE: พร้อมส่ง byte ถัดไป ---
+     * BUG FIX: ต้องอ่าน SR ใหม่ ห้ามใช้ sr_val ที่อ่านไว้ตอนต้น ISR เพราะ
+     * RX callback ด้านบนอาจเรียก UART_Driver_SendString() ซึ่งเขียน byte แรก
+     * ลง DR ไปแล้ว — sr_val ยังบอก TXE = 1 (ค่าเก่า) ทำให้เขียน byte ที่ 2
+     * ทับ byte แรกก่อนมันถูกส่ง ตัวอักษรแรกของข้อความจึงหาย ("TATUS")
+     * และตรวจเฉพาะตอนเปิด TXEIE อยู่เท่านั้น (TXE = 1 ตลอดเวลาตอนว่าง) */
+    if (((REG32(USART2_BASE + USART_OFFSET_SR) & (1UL << USART_SR_TXE_BIT)) != 0U)
+        && ((REG32(USART2_BASE + USART_OFFSET_CR1) & (1UL << USART_CR1_TXEIE_BIT)) != 0U))
     {
         if (s_tx_busy != 0U)
         {

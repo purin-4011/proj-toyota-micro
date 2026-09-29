@@ -34,6 +34,7 @@
  *          ยังไม่มี: โหมดตั้งรหัสใหม่ (Setup mode - รอออกแบบ UI เพิ่ม), CRC
  *          (ตาม Timeline ที่เหลือ)
  ******************************************************************************/
+#include "core_driver.h"
 #include "gpio_driver.h"
 #include "exti_driver.h"
 #include "timer_driver.h"
@@ -47,6 +48,8 @@
 #include "admin_command.h"
 #include "dial_lock.h"
 #include "setup_mode.h"
+#include "env_monitor.h"
+#include "system_mode.h"
 #include "app_config.h"
 
 /* จำนวน tick (100ms/tick) ที่ต้องการให้ LED กระพริบสั้นๆ ตอบรับการกด/ผิด */
@@ -67,6 +70,16 @@ static uint32_t volatile s_setup_press_start_tick = 0U;
 static uint16_t volatile s_green_blink_ticks_remaining = 0U;
 static uint16_t volatile s_red_blink_ticks_remaining = 0U;
 
+/* ปุ่มที่วัดระยะเวลากด (PB4, PB5): จำไว้ว่าจังหวะ "กด" ถูกรับไว้จริงไหม
+ * ป้องกันกรณีกดตอน sleep/disabled (ถูกทิ้ง) แล้วไปปล่อยตอนระบบกลับมา
+ * ACTIVE — ถ้าไม่เช็ค จะคำนวณ duration จากค่าเวลาเก่าจนได้ LONG ผิดๆ */
+static bool volatile s_press_valid = false;
+static bool volatile s_setup_press_valid = false;
+
+/* นับ tick สำหรับสั่งอ่าน NTC + LDR และจังหวะกระพริบตอน DISABLED */
+static uint8_t volatile s_env_sample_ticks = 0U;
+static uint8_t volatile s_disabled_blink_ticks = 0U;
+
 /* buffer สะสมบรรทัดคำสั่ง admin ที่รับมาทีละ byte จาก UART RX interrupt */
 static char s_admin_line_buffer[MAIN_ADMIN_LINE_MAX_LEN];
 static uint8_t s_admin_line_index = 0U;
@@ -82,9 +95,16 @@ static void Main_SetupNotifyHandler(SetupMode_Notification_t notification);
 static void Main_UartRxHandler(uint8_t received_byte);
 static void Main_AdcEocHandler(uint16_t raw_value);
 static void Main_AdcWatchdogHandler(void);
+static void Main_AdcInjectedHandler(uint16_t ntc_raw, uint16_t ldr_raw);
+static void Main_EnvNotifyHandler(EnvMonitor_Notification_t notification);
+static void Main_SystemNotifyHandler(SystemMode_Notification_t notification);
+static bool Main_AcceptUserInput(void);
 static void Main_HardwareInit(void);
 
 static void Main_SendCurrentPassword(void);
+static void Main_SendStatus(void);
+static void Main_AppendUint(char * p_buf, uint8_t * p_len, uint32_t value);
+static void Main_AppendDeciC(char * p_buf, uint8_t * p_len, int32_t deci_c);
 static void Main_AppendSymbolPattern(char * p_buf, uint8_t * p_len,
                                      CodeSymbol_t (*get_symbol)(uint8_t), uint8_t count);
 static void Main_AppendChar(char * p_buf, uint8_t * p_len, char c);
@@ -93,13 +113,18 @@ static void Main_AppendDigit(char * p_buf, uint8_t * p_len, uint8_t digit);
 
 int main(void)
 {
+    /* ต้องเปิด FPU เป็นอย่างแรก ก่อนโค้ดที่ใช้ float (env_monitor) จะทำงาน */
+    Core_Driver_Init();
+
     Main_HardwareInit();
 
-    /* main loop ว่างเปล่าโดยตั้งใจ - งานทั้งหมดขับเคลื่อนด้วย interrupt
-     * (EXTI4 สำหรับปุ่ม, TIM3 สำหรับ periodic tick) ตามเกณฑ์ "ห้าม Polling" */
+    /* งานทั้งหมดขับเคลื่อนด้วย interrupt ตามเกณฑ์ "ห้าม Polling"
+     * main loop จึงแค่สั่งให้ CPU เข้า Sleep mode (WFI) ระหว่างรอ interrupt
+     * ถัดไป — ตอนระบบอยู่ในสถานะ SLEEP interrupt เหลือแค่ ~15 ครั้ง/วินาที
+     * (TIM3 + อ่าน NTC/LDR) CPU จึงหลับเกือบตลอดเวลา */
     for (;;)
     {
-        /* รอออกแบบ UI เพิ่มก่อนค่อยทำโหมดตั้งรหัสใหม่ (Setup mode) */
+        Core_Driver_WaitForInterrupt();
     }
 }
 
@@ -141,8 +166,14 @@ static void Main_HardwareInit(void)
     UART_Driver_Init(Main_UartRxHandler);
     UART_Driver_SendString("Digital Combination Lock - Admin console ready\r\n");
 
-    /* --- ADC (potentiometer, PA4) สำหรับล็อกชั้นที่ 2 (dial lock) --- */
-    ADC_Driver_Init(Main_AdcEocHandler);
+    /* --- สถานะระบบ (ACTIVE/SLEEP/DISABLED) และเซนเซอร์สภาพแวดล้อม
+     *     ต้อง init ก่อน ADC เพราะ JEOC callback จะเรียก EnvMonitor --- */
+    SystemMode_Init(Main_SystemNotifyHandler);
+    EnvMonitor_Init(Main_EnvNotifyHandler);
+
+    /* --- ADC: regular = potentiometer (PA4) สำหรับล็อกชั้นที่ 2,
+     *          injected = NTC (PA0) + LDR (PA1) อ่านทุก 200ms จาก TIM3 --- */
+    ADC_Driver_Init(Main_AdcEocHandler, Main_AdcInjectedHandler);
 
     /* --- CRC (ตรวจสอบความถูกต้องของรหัสที่เก็บไว้ ป้องกัน RAM corruption)
      *     ต้องเปิดก่อน LockFsm_Init() เพราะข้างในจะเรียก CodeStorage_Init()
@@ -168,13 +199,26 @@ static void Main_ExtiEventHandler(EXTI_Edge_t const edge)
 {
     if (edge == EXTI_EDGE_RISING)
     {
+        /* รับการกดเฉพาะตอน ACTIVE (sleep/disabled ไม่รับปุ่ม) */
+        s_press_valid = Main_AcceptUserInput();
         s_press_start_tick = Timer_Driver_TIM2_GetTick();
+    }
+    else if (!s_press_valid)
+    {
+        /* จังหวะกดไม่ได้ถูกรับไว้ (กดตอน sleep/disabled) - ทิ้งการปล่อยนี้ */
+    }
+    else if (SystemMode_Get() != SYSTEM_MODE_ACTIVE)
+    {
+        /* ระบบเปลี่ยนเป็น DISABLED ระหว่างกดค้าง - ทิ้ง */
+        s_press_valid = false;
     }
     else /* EXTI_EDGE_FALLING */
     {
         uint32_t const release_tick = Timer_Driver_TIM2_GetTick();
         uint32_t const duration_ms  = release_tick - s_press_start_tick;
         CodeSymbol_t const symbol   = CodeDecoder_Classify(duration_ms);
+
+        s_press_valid = false;
 
         if (SetupMode_GetState() == SETUP_STATE_ENTER_CODE)
         {
@@ -204,13 +248,20 @@ static void Main_ExtiSetupButtonHandler(EXTI_Edge_t const edge)
 {
     if (edge == EXTI_EDGE_RISING)
     {
+        s_setup_press_valid = Main_AcceptUserInput();
         s_setup_press_start_tick = Timer_Driver_TIM2_GetTick();
+    }
+    else if ((!s_setup_press_valid) || (SystemMode_Get() != SYSTEM_MODE_ACTIVE))
+    {
+        /* กดตอน sleep/disabled หรือระบบเปลี่ยนสถานะระหว่างกดค้าง - ทิ้ง */
+        s_setup_press_valid = false;
     }
     else /* EXTI_EDGE_FALLING */
     {
         uint32_t const release_tick = Timer_Driver_TIM2_GetTick();
         uint32_t const duration_ms  = release_tick - s_setup_press_start_tick;
 
+        s_setup_press_valid = false;
         SetupMode_OnButtonPB5(duration_ms);
     }
 }
@@ -224,7 +275,14 @@ static void Main_ExtiDigitUpHandler(EXTI_Edge_t const edge)
 {
     if (edge == EXTI_EDGE_FALLING)
     {
-        SetupMode_OnDigitIncrement();
+        if (Main_AcceptUserInput())
+        {
+            SetupMode_OnDigitIncrement();
+        }
+        else
+        {
+            /* sleep/disabled - ไม่รับปุ่ม */
+        }
     }
     else
     {
@@ -240,7 +298,14 @@ static void Main_ExtiDigitDownHandler(EXTI_Edge_t const edge)
 {
     if (edge == EXTI_EDGE_FALLING)
     {
-        SetupMode_OnDigitDecrement();
+        if (Main_AcceptUserInput())
+        {
+            SetupMode_OnDigitDecrement();
+        }
+        else
+        {
+            /* sleep/disabled - ไม่รับปุ่ม */
+        }
     }
     else
     {
@@ -300,13 +365,51 @@ static void Main_Tim3TickHandler(void)
     /* อัพเดตจอ 7-segment แสดง lockout countdown ทุก tick ที่อยู่ในสถานะนี้
      * (ยังไม่ทำ "blank" ตอนไม่ใช่ lockout เพราะ BCD driver IC ไม่มีขา
      * Blanking Input ต่อไว้ - ดู TODO ใน seven_segment_driver.h) */
-    if (LockFsm_GetState() == LOCK_STATE_LOCKED_OUT)
+    if ((LockFsm_GetState() == LOCK_STATE_LOCKED_OUT) && (SystemMode_Get() == SYSTEM_MODE_ACTIVE))
     {
         SevenSegment_Driver_ShowDigit((uint8_t) LockFsm_GetLockoutSecondsRemaining());
     }
     else
     {
-        /* ไม่อยู่ในสถานะ lockout - ไม่ต้องอัพเดตจอ */
+        /* ไม่อยู่ในสถานะ lockout หรือระบบ sleep/disabled - ไม่ต้องอัพเดตจอ */
+    }
+
+    /* --- สั่งอ่าน NTC + LDR (ADC injected) ทุก 200ms ผลมาทาง JEOC interrupt --- */
+    s_env_sample_ticks++;
+    if (s_env_sample_ticks >= (uint8_t) APP_ENV_SAMPLE_TICKS)
+    {
+        s_env_sample_ticks = 0U;
+        ADC_Driver_StartInjected();
+    }
+    else
+    {
+        /* ยังไม่ถึงรอบอ่าน */
+    }
+
+    /* --- ขับ state machine ระดับระบบ: ว่างพอจะหลับได้ก็ต่อเมื่อไม่ได้กำลัง
+     *     กรอกรหัส/ปลดล็อก/ล็อกเอาต์ และไม่อยู่ใน Setup Mode (ทำให้ sleep
+     *     ไม่มีทางไปล้าง lockout หรือตัดการกรอกรหัสกลางคันได้) --- */
+    SystemMode_OnTick((LockFsm_GetState() == LOCK_STATE_IDLE)
+                          && (SetupMode_GetState() == SETUP_STATE_INACTIVE),
+                      EnvMonitor_IsPresenceDetected());
+
+    /* --- DISABLED: LED แดงกระพริบ (ต่างจาก lockout ที่ติดค้าง) --- */
+    if (SystemMode_Get() == SYSTEM_MODE_DISABLED)
+    {
+        s_disabled_blink_ticks++;
+        if (s_disabled_blink_ticks >= (uint8_t) APP_DISABLED_BLINK_TICKS)
+        {
+            s_disabled_blink_ticks = 0U;
+            GPIO_Driver_TogglePin(APP_LED_RED_PORT, APP_LED_RED_PIN);
+        }
+        else
+        {
+            /* ยังไม่ถึงจังหวะสลับ */
+        }
+    }
+    else
+    {
+        s_disabled_blink_ticks = 0U;
     }
 }
 
@@ -325,15 +428,8 @@ static void Main_LockNotifyHandler(LockFsm_Notification_t const notification)
             /* แสดงจำนวนหลักที่ป้อนไปแล้วบน 7-segment (1, 2, 3, ...) */
             SevenSegment_Driver_ShowDigit(LockFsm_GetEntryCount());
 
-            /* ถ้านี่คือสัญลักษณ์แรกของรอบป้อนรหัสใหม่ (entry count เพิ่ง
-             * กลายเป็น 1) และ potentiometer อยู่ถูกโซนเป้าหมายอยู่แล้ว
-             * ตอนนี้พอดี -> เปิด Analog Watchdog เฝ้าดูไม่ให้หลุดโซน
-             * ระหว่างกด (ป้องกันอุบัติเหตุมือไปโดน)
-             *
-             * ถ้า poten อยู่ผิดโซนอยู่แล้วตั้งแต่ก่อนกดปุ่มแรก -> "ไม่เปิด"
-             * watchdog เลย เพราะไม่ใช่การ "หลุด" ระหว่างกด แต่ผิดตั้งแต่ต้น
-             * ปล่อยให้ป้อนรหัสจนจบตามปกติ แล้วไปนับเป็น "กรอกผิด 1 ครั้ง"
-             * ตอน validate เหมือนกดรหัสปุ่มผิดปกติ (ตามที่ต้องการ) */
+            /* สัญลักษณ์แรกของรอบ (entry count = 1) -> เปิด Analog Watchdog
+             * เฝ้าโซนที่ potentiometer อยู่ตอนนี้ (ดูรายละเอียดด้านล่าง) */
             if (LockFsm_GetEntryCount() == 1U)
             {
                 /* ปุ่มแรกของรอบ: ล็อกโซนที่ potentiometer อยู่ "ตอนนี้"
@@ -505,6 +601,85 @@ static void Main_SendCurrentPassword(void)
 }
 
 /**
+ * @brief  คำสั่ง admin "STATUS" — ส่งสถานะระบบ อุณหภูมิ และความสว่าง เช่น
+ *         "STATUS: ACTIVE, temp=27.4C (normal 27.1C), light=312lux (normal 350lux)"
+ *         ใช้ดูค่าจริงจากเซนเซอร์ตอนเดโม/ปรับเกณฑ์
+ */
+static void Main_SendStatus(void)
+{
+    char msg_buf[MAIN_UART_MSG_MAX_LEN];
+    uint8_t msg_len = 0U;
+    SystemMode_t const mode = SystemMode_Get();
+
+    Main_AppendStr(msg_buf, &msg_len, "STATUS: ");
+
+    if (mode == SYSTEM_MODE_ACTIVE)
+    {
+        Main_AppendStr(msg_buf, &msg_len, "ACTIVE");
+    }
+    else if (mode == SYSTEM_MODE_SLEEP)
+    {
+        Main_AppendStr(msg_buf, &msg_len, "SLEEP");
+    }
+    else
+    {
+        Main_AppendStr(msg_buf, &msg_len, "DISABLED");
+    }
+
+    Main_AppendStr(msg_buf, &msg_len, ", temp=");
+    Main_AppendDeciC(msg_buf, &msg_len, EnvMonitor_GetTemperatureDeciC());
+    Main_AppendStr(msg_buf, &msg_len, "C (normal ");
+    Main_AppendDeciC(msg_buf, &msg_len, EnvMonitor_GetBaselineTemperatureDeciC());
+    Main_AppendStr(msg_buf, &msg_len, "C), light=");
+    Main_AppendUint(msg_buf, &msg_len, EnvMonitor_GetLux());
+    Main_AppendStr(msg_buf, &msg_len, "lux (normal ");
+    Main_AppendUint(msg_buf, &msg_len, EnvMonitor_GetBaselineLux());
+    Main_AppendStr(msg_buf, &msg_len, "lux)\r\n");
+
+    UART_Driver_SendString(msg_buf);
+}
+
+/** ต่อเลขจำนวนเต็มบวกหลายหลัก (ไม่ใช้ sprintf ตามแนว MISRA ของโปรเจค) */
+static void Main_AppendUint(char * const p_buf, uint8_t * const p_len, uint32_t value)
+{
+    char digits[10];
+    uint8_t count = 0U;
+
+    do
+    {
+        digits[count] = (char) ('0' + (char) (value % 10U));
+        value /= 10U;
+        count++;
+    } while ((value > 0U) && (count < (uint8_t) sizeof(digits)));
+
+    while (count > 0U)
+    {
+        count--;
+        Main_AppendChar(p_buf, p_len, digits[count]);
+    }
+}
+
+/** ต่ออุณหภูมิหน่วย 0.1 องศา เช่น 274 -> "27.4", -35 -> "-3.5" */
+static void Main_AppendDeciC(char * const p_buf, uint8_t * const p_len, int32_t const deci_c)
+{
+    uint32_t magnitude;
+
+    if (deci_c < 0)
+    {
+        Main_AppendChar(p_buf, p_len, '-');
+        magnitude = (uint32_t) (-deci_c);
+    }
+    else
+    {
+        magnitude = (uint32_t) deci_c;
+    }
+
+    Main_AppendUint(p_buf, p_len, magnitude / 10U);
+    Main_AppendChar(p_buf, p_len, '.');
+    Main_AppendDigit(p_buf, p_len, (uint8_t) (magnitude % 10U));
+}
+
+/**
  * @brief  ต่อรูปแบบรหัส "short-long-..." ลง buffer โดยอ่านสัญลักษณ์ทีละตัว
  *         ผ่านฟังก์ชัน get_symbol (ใช้ร่วมกันทั้ง SHOWPASS และสรุป Setup Mode)
  */
@@ -587,22 +762,44 @@ static void Main_UartRxHandler(uint8_t const received_byte)
             switch (cmd)
             {
                 case ADMIN_CMD_UNLOCK:
+                    SystemMode_OnUserActivity();   /* ปลุกถ้าหลับอยู่ */
                     LockFsm_ForceUnlock();
                     UART_Driver_SendString("OK: Unlocked\r\n");
                     break;
 
                 case ADMIN_CMD_LOCKOUT:
+                    SystemMode_OnUserActivity();
                     LockFsm_ForceLockout();
                     UART_Driver_SendString("OK: Lockout engaged\r\n");
                     break;
 
                 case ADMIN_CMD_RESET:
-                    LockFsm_ResetToDefault();
-                    UART_Driver_SendString("OK: Code reset to default\r\n");
+                    if (SystemMode_Get() == SYSTEM_MODE_DISABLED)
+                    {
+                        /* ตอน DISABLED: RESET ทำหน้าที่ "ล้าง alarm อุณหภูมิ"
+                         * อย่างเดียว — รหัสและโซนที่ตั้งไว้จาก Setup Mode
+                         * ต้องอยู่ครบ (ระบบถูกระงับชั่วคราว ไม่ได้แปลว่ารหัส
+                         * เสียหาย) ถ้ายังผิดปกติอยู่ alarm จะเกิดใหม่ภายใน
+                         * ~0.6 วินาที */
+                        EnvMonitor_ClearTamper();
+                        SystemMode_ClearTamper();
+                        UART_Driver_SendString("OK: Temperature alarm cleared (code unchanged)\r\n");
+                    }
+                    else
+                    {
+                        /* ตอนใช้งานปกติ: คืนรหัสและโซนเป็นค่า default เหมือนเดิม */
+                        LockFsm_ResetToDefault();
+                        SystemMode_OnUserActivity();
+                        UART_Driver_SendString("OK: Code reset to default\r\n");
+                    }
                     break;
 
                 case ADMIN_CMD_SHOWPASS:
                     Main_SendCurrentPassword();
+                    break;
+
+                case ADMIN_CMD_STATUS:
+                    Main_SendStatus();
                     break;
 
                 default:
@@ -639,7 +836,7 @@ static void Main_AdcEocHandler(uint16_t const raw_value)
 {
     DialLock_UpdateRaw(raw_value);
 
-    if (LockFsm_GetState() == LOCK_STATE_IDLE)
+    if ((LockFsm_GetState() == LOCK_STATE_IDLE) && (SystemMode_Get() == SYSTEM_MODE_ACTIVE))
     {
         SevenSegment_Driver_ShowDigit(DialLock_GetCurrentZone());
     }
@@ -658,4 +855,115 @@ static void Main_AdcEocHandler(uint16_t const raw_value)
 static void Main_AdcWatchdogHandler(void)
 {
     LockFsm_OnDialViolation();
+}
+
+/**
+ * @brief  เรียกจาก ADC ISR (JEOC) ทุก 200ms เมื่ออ่าน NTC + LDR เสร็จ
+ */
+static void Main_AdcInjectedHandler(uint16_t const ntc_raw, uint16_t const ldr_raw)
+{
+    EnvMonitor_OnSample(ntc_raw, ldr_raw);
+}
+
+static void Main_EnvNotifyHandler(EnvMonitor_Notification_t const notification)
+{
+    switch (notification)
+    {
+        case ENV_NOTIFY_TAMPER_DETECTED:
+            SystemMode_OnTamper();
+            break;
+
+        default:
+            /* MISRA: default บังคับ */
+            break;
+    }
+}
+
+/**
+ * @brief  รับการกดปุ่มหรือไม่: รับเฉพาะตอน ACTIVE และนับเป็น "มีคนใช้งาน"
+ *         (รีเซ็ตเวลานับเข้า sleep)
+ */
+static bool Main_AcceptUserInput(void)
+{
+    bool result;
+
+    if (SystemMode_Get() == SYSTEM_MODE_ACTIVE)
+    {
+        SystemMode_OnUserActivity();
+        result = true;
+    }
+    else
+    {
+        result = false;
+    }
+
+    return result;
+}
+
+/**
+ * @brief  แสดงผลเมื่อสถานะระบบเปลี่ยน (ACTIVE / SLEEP / DISABLED)
+ */
+static void Main_SystemNotifyHandler(SystemMode_Notification_t const notification)
+{
+    char msg_buf[MAIN_UART_MSG_MAX_LEN];
+    uint8_t msg_len = 0U;
+
+    switch (notification)
+    {
+        case SYSTEM_NOTIFY_ENTER_SLEEP:
+            /* ดับทุกอย่าง + หยุดอ่าน potentiometer ต่อเนื่อง ให้เหลือ
+             * interrupt น้อยที่สุด CPU จะได้หลับใน WFI เกือบตลอด */
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_PIN_RESET);
+            SevenSegment_Driver_Blank();
+            ADC_Driver_PauseRegular();
+            UART_Driver_SendString("SLEEP: nobody nearby\r\n");
+            break;
+
+        case SYSTEM_NOTIFY_WAKE:
+            /* กลับมาอ่าน potentiometer -> 7-segment จะแสดงโซนเองจาก EOC */
+            ADC_Driver_ResumeRegular();
+            UART_Driver_SendString("WAKE: ready\r\n");
+            break;
+
+        case SYSTEM_NOTIFY_ENTER_DISABLED:
+            /* ยกเลิกทุกอย่างที่ค้างอยู่ (Setup Mode, การกรอกรหัส, ปลดล็อก
+             * ค้าง) แล้วปฏิเสธปุ่มทั้งหมดจนกว่า admin จะ RESET */
+            if (SetupMode_GetState() != SETUP_STATE_INACTIVE)
+            {
+                SetupMode_Cancel();
+            }
+            else
+            {
+                /* ไม่ได้อยู่ใน Setup Mode */
+            }
+            LockFsm_ForceIdle();
+            ADC_Driver_ResumeRegular();   /* เผื่อเกิดตอนกำลัง sleep อยู่ */
+
+            s_green_blink_ticks_remaining = 0U;
+            s_red_blink_ticks_remaining = 0U;
+            GPIO_Driver_WritePin(APP_LED_GREEN_PORT, APP_LED_GREEN_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_G_PORT, APP_LED_G_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_YELLOW_PORT, APP_LED_YELLOW_PIN, GPIO_PIN_RESET);
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_SET);
+            SevenSegment_Driver_Blank();
+
+            Main_AppendStr(msg_buf, &msg_len, "ALERT: TEMP ABNORMAL ");
+            Main_AppendDeciC(msg_buf, &msg_len, EnvMonitor_GetTemperatureDeciC());
+            Main_AppendStr(msg_buf, &msg_len, "C (normal ");
+            Main_AppendDeciC(msg_buf, &msg_len, EnvMonitor_GetBaselineTemperatureDeciC());
+            Main_AppendStr(msg_buf, &msg_len, "C) - keypad disabled, send RESET\r\n");
+            UART_Driver_SendString(msg_buf);
+            break;
+
+        case SYSTEM_NOTIFY_EXIT_DISABLED:
+            GPIO_Driver_WritePin(APP_LED_RED_PORT, APP_LED_RED_PIN, GPIO_PIN_RESET);
+            break;
+
+        default:
+            /* MISRA: default บังคับ */
+            break;
+    }
 }

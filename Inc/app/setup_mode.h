@@ -74,6 +74,12 @@ void SetupMode_OnDigitDecrement(void);
  */
 void SetupMode_OnCodeSymbol(CodeSymbol_t symbol);
 
+/**
+ * @brief  ยกเลิก Setup Mode ทันทีโดยไม่บันทึกอะไร (ใช้ตอนระบบเข้า DISABLED
+ *         เพราะอุณหภูมิผิดปกติ) ไม่มี notification — ผู้เรียกจัดการ LED/UART เอง
+ */
+void SetupMode_Cancel(void);
+
 SetupState_t SetupMode_GetState(void);
 uint8_t SetupMode_GetTargetDigitCount(void);
 uint8_t SetupMode_GetEnteredCount(void);

@@ -68,6 +68,10 @@ AdminCommand_t AdminCommand_Parse(char const * const p_line)
     {
         result = ADMIN_CMD_SHOWPASS;
     }
+    else if (AdminCommand_StringEquals(p_line, "STATUS") != 0U)
+    {
+        result = ADMIN_CMD_STATUS;
+    }
     else
     {
         result = ADMIN_CMD_UNKNOWN;
